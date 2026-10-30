@@ -28,6 +28,30 @@
   `DEFAULT_SERVER_URL` if it differs; `npx expo run:android` needs your
   Android SDK + S23.
 
+## M1 - Adapters + provider eval (done)
+
+- `apps/server/src/adapters/`: exact MVP.md section 2 interfaces
+  (`VisionTriage`, `VisionAnswer`, `ObjectFinder`, `SpeechToText`,
+  `FaceMatcher`), scriptable mocks for all five, `OpenAICompat` triage +
+  answer (baseURL/model/key from env; covers Meta Model API, OpenRouter,
+  plain OpenAI, local Ollama), strict `parseTriageResult`, triage system
+  prompt forcing TriageResult JSON, provider factory
+  (`mock|meta|openrouter|openai|local`). Compile-only: no test calls network.
+- `apps/eval` notes test now runs any provider (`--provider`, default
+  `PROVIDER` env else `mock`) over `data/notes/<label>_*.jpg` (leading
+  digits: `10_1.jpg` and `500_new_front_03.jpg` both work) -> `results.md`.
+  Scenes/audio keep the direct Meta client (key needed only for those).
+- How to run: `cd apps/eval && npm run spike -- notes --provider mock`
+  (free); `--provider meta` needs `META_API_KEY`.
+- Tests: 19 pass (config 2, mobile gate 6, server 11 incl. 6 adapter tests).
+- Stubs: finder/STT/faces are mock-only (real SAM/STT in M4 wiring, faces
+  in M5); cost estimates for non-meta providers are omitted (rates unknown).
+- Notes: npm here predates the `workspace:` protocol, so eval depends on
+  `@eyesmart/server` via semver `^0.1.0` (still linked locally); eval
+  prebuild/pretypecheck build the server first for its `.d.ts`.
+- Next steps for you: collect the clear/hard note sets (MVP.md section 6),
+  then `notes --provider meta --limit 5` for eval run #1.
+
 ## Blocked
 
 (nothing)

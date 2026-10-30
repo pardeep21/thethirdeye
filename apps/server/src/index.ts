@@ -11,7 +11,7 @@ import {
   type SpeakMessage,
 } from "./protocol.js";
 import { LatestFrameStore } from "./store.js";
-import { createVisionTriage, providerFromEnv } from "./adapters.js";
+import { createAdapters, providerFromEnv } from "./adapters/factory.js";
 
 export interface ServerHandles {
   port: number;
@@ -20,7 +20,7 @@ export interface ServerHandles {
 
 export async function startServer(port: number): Promise<ServerHandles> {
   const provider = providerFromEnv();
-  const vision = createVisionTriage(provider);
+  const adapters = createAdapters(provider);
   const frames = new LatestFrameStore();
 
   const http = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -66,7 +66,13 @@ export async function startServer(port: number): Promise<ServerHandles> {
     if (isFrameMessage(msg)) {
       const jpeg = Buffer.from(msg.jpegBase64, "base64");
       frames.set({ jpeg, width: msg.width, height: msg.height, ts: msg.ts, receivedAt: Date.now() });
-      const result = await vision.triage(jpeg);
+      let result;
+      try {
+        result = await adapters.triage.triage(jpeg);
+      } catch (err) {
+        console.error("triage failed:", err instanceof Error ? err.message : err);
+        return null;
+      }
       const note = result.notes[0];
       if (note && note.denomination !== null && note.confidence >= 0.5) {
         return { type: "speak", text: "panj sau da note", lang: "pa", priority: "P1" };

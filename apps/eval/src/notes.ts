@@ -1,54 +1,20 @@
-// Test 1 — notes: identify Indian rupee denominations from images.
-// Each image is sent once per requested size (longest side, downscale only)
-// with a strict JSON-only prompt; the answer is compared to the filename.
+// Test 1 — notes: run a server VisionTriage provider over
+// data/notes/<label>_*.jpg and score against the label's leading digits
+// (supports 10_1.jpg and 500_new_front_03.jpg). Sequential, one size at a time.
 
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { chatCompletions, estimateVisionCost } from "./client.js";
-import type { NoteCall, RunContext } from "./types.js";
+import { createAdapters, type ProviderName } from "@eyesmart/server/adapters";
+import { estimateVisionCost } from "./client.js";
+import type { NoteCall } from "./types.js";
 
 export const DENOMINATIONS = [10, 20, 50, 100, 200, 500];
 
-const NOTES_PROMPT = [
-  "You are identifying an Indian rupee banknote in this photo.",
-  'Return ONLY a JSON object, no other text: {"denomination": <10, 20, 50, 100, 200 or 500, or null if no note is visible>, "confidence": <0 to 1>, "note_visible": <true or false>}.',
-  'If no note is visible, return exactly {"denomination": null, "confidence": 0, "note_visible": false}.',
-].join(" ");
-
-/** Filenames look like <value>_<n>.jpg; anything else yields null (reported, not scored). */
 export function parseExpected(filename: string): number | null {
-  const m = basename(filename).match(/^(\d+)_/);
+  const m = basename(filename).match(/^(\d+)/);
   if (!m) return null;
   const v = Number(m[1]);
   return DENOMINATIONS.includes(v) ? v : null;
-}
-
-export function parseNoteJson(text: string): {
-  denomination: number | null;
-  confidence: number | null;
-  noteVisible: boolean | null;
-} {
-  let obj: Record<string, unknown> | null = null;
-  try {
-    obj = JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    const m = text.match(/\{[\s\S]*\}/);
-    if (m) {
-      try {
-        obj = JSON.parse(m[0]) as Record<string, unknown>;
-      } catch {
-        obj = null;
-      }
-    }
-  }
-  if (!obj) return { denomination: null, confidence: null, noteVisible: null };
-  const d = obj.denomination;
-  const denomination =
-    typeof d === "number" && DENOMINATIONS.includes(d) ? d : null;
-  const c = obj.confidence;
-  const confidence = typeof c === "number" && c >= 0 && c <= 1 ? c : null;
-  const nv = obj.note_visible;
-  return { denomination, confidence, noteVisible: typeof nv === "boolean" ? nv : null };
 }
 
 async function loadSharp(): Promise<typeof import("sharp")> {
@@ -62,10 +28,11 @@ async function loadSharp(): Promise<typeof import("sharp")> {
 }
 
 export async function runNotes(
-  ctx: RunContext,
   files: string[],
-  sizes: number[]
+  sizes: number[],
+  provider: ProviderName
 ): Promise<NoteCall[]> {
+  const { triage } = createAdapters(provider);
   const sharp = await loadSharp();
   const results: NoteCall[] = [];
   for (const size of sizes) {
@@ -80,36 +47,40 @@ export async function runNotes(
           .resize({ width: size, height: size, fit: "inside", withoutEnlargement: true })
           .jpeg({ quality: 85 })
           .toBuffer({ resolveWithObject: true });
-        const dataUrl = `data:image/jpeg;base64,${data.toString("base64")}`;
-        const { text, usage, latencyMs, attempts } = await chatCompletions(
-          ctx,
-          NOTES_PROMPT,
-          dataUrl,
-          { maxTokens: 150, jsonMode: true, label }
-        );
-        const { denomination, confidence, noteVisible } = parseNoteJson(text);
-        const ok =
-          expected !== null &&
-          denomination !== null &&
-          denomination === expected;
+        const start = Date.now();
+        const result = await triage.triage(data);
+        const latencyMs = Date.now() - start;
+        const top = result.notes[0];
+        const predicted = top?.denomination ?? null;
+        const confidence = top?.confidence ?? null;
+        const ok = expected !== null && predicted !== null && predicted === expected;
         console.log(
-          `  -> predicted ${denomination ?? "null"} (conf ${confidence ?? "?"}, visible ${noteVisible ?? "?"}) ${ok ? "OK" : "WRONG"} ${latencyMs}ms`
+          `  -> predicted ${predicted ?? "null"} (conf ${confidence ?? "?"}) ${ok ? "OK" : "WRONG"} ${latencyMs}ms`
         );
+        const last = triage.getLastUsage();
+        const usage = last
+          ? {
+              promptTokens: last.promptTokens,
+              completionTokens: last.completionTokens,
+              totalTokens: last.promptTokens + last.completionTokens,
+            }
+          : undefined;
         results.push({
           test: "notes",
           file: name,
-          model: ctx.visionModel,
+          model: triage.name,
           imageSize: `${size}px`,
           latencyMs,
-          attempts,
+          attempts: 1,
           usage,
-          costUsd: estimateVisionCost(ctx.visionModel, usage),
+          // Meta rates are the only ones we know; other providers report latency/accuracy only.
+          costUsd: provider === "meta" ? estimateVisionCost(triage.name, usage) : undefined,
           actualDims: `${info.width}x${info.height}`,
           expected,
-          predicted: denomination,
+          predicted,
           confidence,
-          noteVisible,
-          raw: text.slice(0, 500),
+          noteVisible: predicted !== null,
+          raw: JSON.stringify(result).slice(0, 500),
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -117,7 +88,7 @@ export async function runNotes(
         results.push({
           test: "notes",
           file: name,
-          model: ctx.visionModel,
+          model: triage.name,
           imageSize: `${size}px`,
           latencyMs: 0,
           attempts: 1,

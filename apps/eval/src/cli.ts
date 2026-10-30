@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-// eyesmart-spike CLI: benchmark Meta Model API vision + transcription for a
-// blind shopkeeper's assistant. Sequential calls, retry on 429, results.md out.
+// eyesmart-spike: benchmark vision + transcription for a blind shopkeeper's
+// assistant. The notes test runs any server VisionTriage provider over
+// data/notes/<label>_*.jpg; scenes/audio still use the direct Meta client.
 //
 // Usage:
-//   eyesmart-spike [notes|scenes|audio|all] [--data ./data] [--out ./results.md]
-//                  [--sizes 512,1024] [--limit N]
-// Data layout: <data>/notes/<value>_<n>.jpg, <data>/scenes/*, <data>/audio/*
+//   eyesmart-spike [notes|scenes|audio|all] [--provider mock] [--data ./data]
+//                  [--out ./results.md] [--sizes 512,1024] [--limit N]
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { providerFromEnv, type ProviderName } from "@eyesmart/server/adapters";
 import { getConfig, loadDotEnv } from "./client.js";
 import { runNotes } from "./notes.js";
 import { runScenes } from "./scenes.js";
@@ -16,8 +17,11 @@ import { runAudio } from "./audio.js";
 import { buildMarkdown, writeResultsMd } from "./report.js";
 import type { TestName } from "./types.js";
 
+const PROVIDERS: ProviderName[] = ["mock", "meta", "openrouter", "openai", "local"];
+
 interface Args {
   test: TestName | "all";
+  provider: ProviderName;
   data: string;
   out: string;
   sizes: number[];
@@ -26,14 +30,28 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { test: "all", data: "./data", out: "./results.md", sizes: [512, 1024], limit: 0, help: false };
+  const args: Args = {
+    test: "all",
+    provider: providerFromEnv(),
+    data: "./data",
+    out: "./results.md",
+    sizes: [512, 1024],
+    limit: 0,
+    help: false,
+  };
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--help" || a === "-h") args.help = true;
     else if (a === "--data") args.data = argv[++i] ?? args.data;
     else if (a === "--out") args.out = argv[++i] ?? args.out;
-    else if (a === "--sizes") {
+    else if (a === "--provider") {
+      const v = (argv[++i] ?? "").toLowerCase();
+      if (!PROVIDERS.includes(v as ProviderName)) {
+        throw new Error(`Unknown provider: ${v} (expected ${PROVIDERS.join("|")})`);
+      }
+      args.provider = v as ProviderName;
+    } else if (a === "--sizes") {
       const v = argv[++i] ?? "";
       const sizes = v.split(",").map(Number).filter((n) => Number.isInteger(n) && n > 0);
       if (sizes.length) args.sizes = sizes;
@@ -54,19 +72,22 @@ function parseArgs(argv: string[]): Args {
 
 function usage(): string {
   return [
-    "eyesmart-spike - Meta Model API benchmark for a blind shopkeeper's assistant",
+    "eyesmart-spike - benchmark for a blind shopkeeper's assistant",
     "",
     "Usage: eyesmart-spike [notes|scenes|audio|all] [options]",
     "",
     "Options:",
-    "  --data DIR     input root (default ./data; expects notes/, scenes/, audio/)",
-    "  --out FILE     report path (default ./results.md)",
-    "  --sizes LIST   notes resize sizes, longest side px (default 512,1024)",
-    "  --limit N      max files per test, 0 = all (default 0; use for cheap smoke runs)",
-    "  --help         this text",
+    "  --provider NAME  notes triage provider: mock|meta|openrouter|openai|local",
+    "                   (default: PROVIDER env, else mock)",
+    "  --data DIR       input root (default ./data; expects notes/, scenes/, audio/)",
+    "  --out FILE       report path (default ./results.md)",
+    "  --sizes LIST     notes resize sizes, longest side px (default 512,1024)",
+    "  --limit N        max files per test, 0 = all (default 0; use for cheap smoke runs)",
+    "  --help           this text",
     "",
-    "Env (.env or environment): META_API_KEY (required), MODEL_API_KEY (fallback),",
-    "META_BASE_URL, META_VISION_MODEL, META_ASR_MODEL.",
+    "Notes labels: leading digits of data/notes/<label>_*.jpg (10_1.jpg, 500_new_front_03.jpg).",
+    "Keys per provider: META_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY (see ../server/.env.example).",
+    "Scenes/audio still use the direct Meta client (META_API_KEY required).",
   ].join("\n");
 }
 
@@ -83,19 +104,18 @@ function listFiles(dir: string, exts: string[]): string[] {
 }
 
 async function main(): Promise<void> {
+  loadDotEnv(process.cwd());
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log(usage());
     return;
   }
-  loadDotEnv(process.cwd());
-  const ctx = getConfig(args.limit);
   const startedAt = new Date();
-  console.log(`eyesmart-spike: vision=${ctx.visionModel} asr=${ctx.asrModel} base=${ctx.baseUrl}`);
+  console.log(`eyesmart-spike: notes provider=${args.provider}`);
 
   const data = resolve(args.data);
   const want = (t: TestName) => args.test === "all" || args.test === t;
-  const applyLimit = (files: string[]) => (ctx.limit > 0 ? files.slice(0, ctx.limit) : files);
+  const applyLimit = (files: string[]) => (args.limit > 0 ? files.slice(0, args.limit) : files);
 
   const noteFiles = want("notes")
     ? applyLimit(listFiles(join(data, "notes"), [".jpg", ".jpeg", ".png", ".webp"]))
@@ -110,16 +130,26 @@ async function main(): Promise<void> {
   if (!noteFiles.length && !sceneFiles.length && !audioFiles.length) {
     throw new Error(
       `No input files for test "${args.test}" under ${data}/ ` +
-        `(needs notes/<value>_<n>.jpg, scenes/*, audio/*).`
+        `(needs notes/<label>_*.jpg, scenes/*, audio/*).`
     );
   }
 
-  // Sequential on purpose: one call at a time, in file order.
-  const notes = noteFiles.length ? await runNotes(ctx, noteFiles, args.sizes) : [];
-  const scenes = sceneFiles.length ? await runScenes(ctx, sceneFiles) : [];
-  const audios = audioFiles.length ? await runAudio(ctx, audioFiles) : [];
+  // The direct Meta client (scenes/audio) needs a key; provider notes do not.
+  const ctx =
+    sceneFiles.length > 0 || audioFiles.length > 0 ? getConfig(args.limit) : undefined;
 
-  const markdown = buildMarkdown({ ctx, sizes: args.sizes, notes, scenes, audios, startedAt });
+  // Sequential on purpose: one call at a time, in file order.
+  const notes = noteFiles.length ? await runNotes(noteFiles, args.sizes, args.provider) : [];
+  const scenes = sceneFiles.length > 0 && ctx ? await runScenes(ctx, sceneFiles) : [];
+  const audios = audioFiles.length > 0 && ctx ? await runAudio(ctx, audioFiles) : [];
+
+  const runInfo = [
+    `Notes triage: \`${notes[0]?.model ?? "not run"}\` (provider ${args.provider})`,
+    ctx
+      ? `Direct Meta client: vision \`${ctx.visionModel}\`, asr \`${ctx.asrModel}\` via \`${ctx.baseUrl}\``
+      : "Direct Meta client: not used (no scenes/audio files)",
+  ];
+  const markdown = buildMarkdown({ runInfo, sizes: args.sizes, notes, scenes, audios, startedAt });
   const outPath = resolve(args.out);
   writeResultsMd(outPath, markdown);
 

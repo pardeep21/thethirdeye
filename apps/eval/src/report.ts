@@ -4,7 +4,7 @@
 import { writeFileSync } from "node:fs";
 import { formatUsd } from "./client.js";
 import { DENOMINATIONS } from "./notes.js";
-import type { AudioCall, CallRecord, NoteCall, RunContext, SceneCall } from "./types.js";
+import type { AudioCall, CallRecord, NoteCall, SceneCall } from "./types.js";
 
 /** Nearest-rank percentile; null when empty. */
 export function percentile(values: number[], p: number): number | null {
@@ -30,7 +30,7 @@ function latencyTable(title: string, groups: Map<string, CallRecord[]>): string 
 }
 
 export interface ReportInput {
-  ctx: RunContext;
+  runInfo: string[];
   sizes: number[];
   notes: NoteCall[];
   scenes: SceneCall[];
@@ -39,7 +39,7 @@ export interface ReportInput {
 }
 
 export function buildMarkdown(input: ReportInput): string {
-  const { ctx, sizes, notes, scenes, audios, startedAt } = input;
+  const { runInfo, sizes, notes, scenes, audios, startedAt } = input;
   const all: CallRecord[] = [...notes, ...scenes, ...audios];
   const okCalls = all.filter((c) => !c.error);
   const totalCost = all.reduce((s, c) => s + (c.costUsd ?? 0), 0);
@@ -50,8 +50,7 @@ export function buildMarkdown(input: ReportInput): string {
   const out: string[] = [];
   out.push("# eyesmart-spike results", "");
   out.push(`Run at (UTC): ${startedAt.toISOString()}`);
-  out.push(`Vision model: \`${ctx.visionModel}\` via \`POST ${ctx.baseUrl}/chat/completions\``);
-  out.push(`ASR model: \`${ctx.asrModel}\` via \`POST ${ctx.baseUrl}/asr/transcribe\``);
+  for (const line of runInfo) out.push(line);
   out.push(`Notes sizes: ${sizes.map((s) => `${s}px longest side`).join(", ")} (downscale only; actual dims per call)`);
   out.push("");
 
