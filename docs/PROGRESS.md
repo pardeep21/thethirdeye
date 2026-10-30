@@ -52,6 +52,29 @@
 - Next steps for you: collect the clear/hard note sets (MVP.md section 6),
   then `notes --provider meta --limit 5` for eval run #1.
 
+## M2 - Decision engine (done)
+
+- `apps/server/src/decision.ts`: events per MVP.md section 4 (`NOTE_SEEN`
+  incl. combined multi-note, `NOTE_UNSURE`, `KNOWN_ARRIVED`,
+  `PERSON_ARRIVED`, `COMMAND_ANSWER`), stability rules (2 consecutive or
+  conf >= 0.85; 2-of-3 faces; count-up-2-frames), dedupe windows (note
+  re-arm after >3 s absence, unsure 8 s, known 10 min/person, unknown
+  2 min + 30 s cap), P1/P2/P3 queue (P1 never stale, P2 drops >5 s, P3
+  max 1 drops >3 s or when P1 pending), mute mode, `cancel()`.
+  Renderer is injected (`minimalRenderer` English until M3).
+- Server rewired: frame -> triage + faces in parallel -> engine ->
+  all due speaks; mute/unmute/cancel commands wired; perception errors
+  stay silent.
+- How to run: `npm test -w @eyesmart/server`.
+- Tests: 43 pass total (config 2, mobile gate 6, server 35 incl. 24 new
+  engine tests from fake-TriageResult sequences with explicit timestamps).
+- Stubs/limits: mute/unmute speak no confirmation (spec is silent on it);
+  dedupe windows start at event-fire time, so a P2/P3 dropped as stale
+  still consumes its silence window (known wart); P1 queue capped at 10
+  (oldest dropped) as overflow defense; face threshold 0.75 is a guess
+  until M5 measures it.
+- Next steps for you: none for M2; phrases land in M3.
+
 ## Blocked
 
 (nothing)

@@ -1,5 +1,6 @@
-// EyeSmart server, M0 skeleton: plain node:http + ws, one process.
-// Frame in -> mock triage -> speak out. Run: PROVIDER=mock node dist/index.js
+// EyeSmart server: plain node:http + ws, one process.
+// Frame in -> triage + faces -> decision engine -> speak out.
+// Run: PROVIDER=mock node dist/index.js
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,7 @@ import {
 } from "./protocol.js";
 import { LatestFrameStore } from "./store.js";
 import { createAdapters, providerFromEnv } from "./adapters/factory.js";
+import { DecisionEngine } from "./decision.js";
 
 export interface ServerHandles {
   port: number;
@@ -22,6 +24,8 @@ export async function startServer(port: number): Promise<ServerHandles> {
   const provider = providerFromEnv();
   const adapters = createAdapters(provider);
   const frames = new LatestFrameStore();
+  // TODO(M3): pass the phrase builder as the engine renderer.
+  const engine = new DecisionEngine();
 
   const http = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (req.method === "GET" && req.url === "/health") {
@@ -47,47 +51,46 @@ export async function startServer(port: number): Promise<ServerHandles> {
   const wss = new WebSocketServer({ server: http });
   wss.on("connection", (ws: WebSocket) => {
     ws.on("message", (data) => {
-      void handleMessage(String(data)).then((reply) => {
-        if (reply && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(reply));
+      void handleMessage(String(data)).then((replies) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        for (const reply of replies) ws.send(JSON.stringify(reply));
       });
     });
   });
 
-  // TODO(M2): replace this inline rule with the decision engine (stability,
-  // dedupe, priority queue). M0 speaks on every confident frame so the
-  // camera -> gate -> WS -> mock -> earbud path can be verified end to end.
-  async function handleMessage(raw: string): Promise<SpeakMessage | null> {
+  async function handleMessage(raw: string): Promise<SpeakMessage[]> {
     let msg: unknown;
     try {
       msg = JSON.parse(raw);
     } catch {
-      return null;
+      return [];
     }
     if (isFrameMessage(msg)) {
       const jpeg = Buffer.from(msg.jpegBase64, "base64");
       frames.set({ jpeg, width: msg.width, height: msg.height, ts: msg.ts, receivedAt: Date.now() });
-      let result;
       try {
-        result = await adapters.triage.triage(jpeg);
+        const [result, hits] = await Promise.all([
+          adapters.triage.triage(jpeg),
+          adapters.faces.match(jpeg),
+        ]);
+        engine.onFrame(result, hits);
       } catch (err) {
-        console.error("triage failed:", err instanceof Error ? err.message : err);
-        return null;
+        console.error("perception failed:", err instanceof Error ? err.message : err);
+        return [];
       }
-      const note = result.notes[0];
-      if (note && note.denomination !== null && note.confidence >= 0.5) {
-        return { type: "speak", text: "panj sau da note", lang: "pa", priority: "P1" };
-      }
-      return null;
+      return engine.takeSpeak().map((a) => ({ type: "speak", text: a.text, lang: a.lang, priority: a.priority }));
     }
     if (isAudioMessage(msg)) {
       // TODO(M4): STT + intent router.
-      return null;
+      return [];
     }
     if (isCommandMessage(msg)) {
-      // TODO(M2): mute/unmute/cancel via the decision engine.
-      return null;
+      if (msg.name === "mute") engine.setMuted(true);
+      else if (msg.name === "unmute") engine.setMuted(false);
+      else engine.cancel();
+      return [];
     }
-    return null;
+    return [];
   }
 
   await new Promise<void>((resolve) => http.listen(port, resolve));

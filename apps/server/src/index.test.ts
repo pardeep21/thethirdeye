@@ -34,8 +34,8 @@ test("frame over WS yields a speak message (mock provider)", async () => {
       const raw = await nextMessage(ws);
       assert.deepEqual(JSON.parse(raw), {
         type: "speak",
-        text: "panj sau da note",
-        lang: "pa",
+        text: "note 500",
+        lang: "en",
         priority: "P1",
       });
     } finally {
