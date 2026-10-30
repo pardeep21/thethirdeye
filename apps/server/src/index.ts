@@ -17,39 +17,132 @@ import { DecisionEngine, FACE_MATCH_THRESHOLD } from "./decision.js";
 import { renderFind, renderProactive, summarizePeople, type PersonBits } from "./phrases.js";
 import { routeIntent } from "./intent.js";
 import type { FaceHit, TriageResult } from "./protocol.js";
+import { PeopleStore } from "./faces/store.js";
+import { StubFaceEmbedder, type FaceEmbedder } from "./faces/embed.js";
+import { defaultDbPath } from "./faces/index.js";
 
 export interface ServerHandles {
   port: number;
   close: () => Promise<void>;
 }
 
-export async function startServer(port: number): Promise<ServerHandles> {
+export interface ServerOpts {
+  store?: PeopleStore;
+  embedder?: FaceEmbedder;
+}
+
+const MAX_BODY_BYTES = 12 * 1024 * 1024;
+
+function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) {
+        reject(new Error("body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch {
+        reject(new Error("invalid JSON body"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function sendJson(res: ServerResponse, status: number, obj: unknown): void {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(obj));
+}
+
+export async function startServer(port: number, opts?: ServerOpts): Promise<ServerHandles> {
   const provider = providerFromEnv();
-  const adapters = createAdapters(provider);
+  const ownStore = !opts?.store;
+  const people = opts?.store ?? new PeopleStore(defaultDbPath());
+  const embedder = opts?.embedder ?? new StubFaceEmbedder();
+  const adapters = createAdapters(provider, { store: people });
   const frames = new LatestFrameStore();
   // TODO(M6): language comes from the phone settings screen; pa until then.
   const engine = new DecisionEngine((e) => renderProactive(e, "pa"));
   let lastPerception: { triage: TriageResult; faces: FaceHit[] } | null = null;
 
-  const http = createServer((req: IncomingMessage, res: ServerResponse) => {
-    if (req.method === "GET" && req.url === "/health") {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, provider }));
-      return;
+  async function handleEnroll(body: unknown): Promise<{ status: number; json: unknown }> {
+    const rec = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
+    if (rec.consent !== true) {
+      return { status: 400, json: { error: "consent is required: this person must agree to be recognised" } };
     }
-    if (req.method === "GET" && req.url === "/frame/latest") {
-      const f = frames.get();
-      if (!f) {
-        res.writeHead(404, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "no frame yet" }));
+    if (typeof rec.name !== "string" || !rec.name.trim()) {
+      return { status: 400, json: { error: "name is required" } };
+    }
+    if (!Array.isArray(rec.photos) || rec.photos.length === 0) {
+      return { status: 400, json: { error: "at least one photo (base64 JPEG) is required" } };
+    }
+    if (rec.photos.length > 10 || rec.photos.some((p) => typeof p !== "string")) {
+      return { status: 400, json: { error: "photos must be an array of 1-10 base64 strings" } };
+    }
+    const embeddings: number[][] = [];
+    for (let i = 0; i < rec.photos.length; i++) {
+      let faces;
+      try {
+        faces = await embedder.embed(Buffer.from(rec.photos[i] as string, "base64"));
+      } catch (err) {
+        return { status: 500, json: { error: `face embedding failed: ${err instanceof Error ? err.message : err}` } };
+      }
+      if (faces.length === 0) {
+        return { status: 400, json: { error: `no face found in photo ${i + 1}; please retake it` } };
+      }
+      embeddings.push(faces[0].embedding);
+    }
+    return { status: 201, json: people.addPerson(rec.name as string, embeddings) };
+  }
+
+  const http = createServer((req: IncomingMessage, res: ServerResponse) => {
+    void (async () => {
+      const path = (req.url ?? "").split("?")[0];
+      if (req.method === "GET" && path === "/health") {
+        sendJson(res, 200, { ok: true, provider });
         return;
       }
-      res.writeHead(200, { "content-type": "image/jpeg" });
-      res.end(f.jpeg);
-      return;
-    }
-    res.writeHead(404, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: "not found" }));
+      if (req.method === "GET" && path === "/frame/latest") {
+        const f = frames.get();
+        if (!f) {
+          sendJson(res, 404, { error: "no frame yet" });
+          return;
+        }
+        res.writeHead(200, { "content-type": "image/jpeg" });
+        res.end(f.jpeg);
+        return;
+      }
+      if (req.method === "GET" && path === "/people") {
+        sendJson(res, 200, people.listPeople());
+        return;
+      }
+      if (req.method === "POST" && path === "/people") {
+        try {
+          const out = await handleEnroll(await readJsonBody(req));
+          sendJson(res, out.status, out.json);
+        } catch (err) {
+          sendJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
+      const del = req.method === "DELETE" && /^\/people\/(\d+)$/.exec(path);
+      if (del) {
+        if (people.removePerson(Number(del[1]))) sendJson(res, 200, { deleted: true });
+        else sendJson(res, 404, { error: "no such person" });
+        return;
+      }
+      sendJson(res, 404, { error: "not found" });
+    })().catch((err: unknown) => {
+      if (!res.headersSent) sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+    });
   });
 
   const wss = new WebSocketServer({ server: http });
@@ -201,7 +294,19 @@ export async function startServer(port: number): Promise<ServerHandles> {
     port: actualPort,
     close: () =>
       new Promise<void>((resolve, reject) => {
-        wss.close(() => http.close((err) => (err ? reject(err) : resolve())));
+        wss.close(() =>
+          http.close((err) => {
+            if (ownStore) {
+              try {
+                people.close();
+              } catch {
+                // Ignore close errors on the owned store.
+              }
+            }
+            if (err) reject(err);
+            else resolve();
+          })
+        );
       }),
   };
 }

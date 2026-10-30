@@ -4,3 +4,6 @@ dist/
 *.log
 coverage/
 .expo/
+*.db
+*.db-wal
+*.db-shm

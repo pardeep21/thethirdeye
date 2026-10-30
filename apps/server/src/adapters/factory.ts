@@ -11,12 +11,13 @@ import { providerFromEnv } from "./index.js";
 export { providerFromEnv };
 export type * from "./index.js";
 import {
-  MockFaceMatcher,
   MockObjectFinder,
   MockSpeechToText,
   MockVisionAnswer,
   MockVisionTriage,
 } from "./mocks.js";
+import { createFaceMatcher } from "../faces/index.js";
+import { PeopleStore } from "../faces/store.js";
 import { OpenAICompatAnswer, OpenAICompatTriage } from "./openaiCompat.js";
 
 function needEnv(name: string): string {
@@ -25,11 +26,21 @@ function needEnv(name: string): string {
   return v;
 }
 
-export function createAdapters(provider: ProviderName = providerFromEnv()): AdapterSet {
+export interface AdapterDeps {
+  store?: PeopleStore;
+}
+
+export function createAdapters(
+  provider: ProviderName = providerFromEnv(),
+  deps?: AdapterDeps
+): AdapterSet {
+  // Faces are always store-backed (even for mock) so enrollment works in
+  // every mode; without an explicit store the data is memory-only.
+  const faces = createFaceMatcher(deps?.store ?? new PeopleStore(":memory:"));
   const mocks = {
     finder: new MockObjectFinder(),
     stt: new MockSpeechToText(),
-    faces: new MockFaceMatcher(),
+    faces,
   };
   switch (provider) {
     case "mock":

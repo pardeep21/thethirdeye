@@ -119,6 +119,36 @@
 - Next steps for you: try real phrasings in the field test; the keyword
   lists are the tuning surface.
 
+## M5 - Face enrollment + SQLite store, embedder STUBBED (done with a Blocked item)
+
+- `apps/server/src/faces/`: real `PeopleStore` (better-sqlite3, embeddings
+  only, `EYESMART_DB`), real `StoredFaceMatcher` (cosine, threshold 0.75)
+  behind the `FaceMatcher` interface, stub `FaceEmbedder` (finds nothing,
+  fail-closed). REST: `POST /people` (requires `consent: true`, 1-10 base64
+  photos, per-photo no-face 400s), `GET /people`, `DELETE /people/:id`
+  (embeddings deleted immediately). Photos are never written to disk.
+- Factory faces are store-backed in every provider (mock included), so
+  enrollment works without keys once a real embedder exists.
+- How to run: `npm test -w @eyesmart/server`; server owns `./eyesmart.db`
+  unless tests inject `:memory:`.
+- Tests: 74 pass total (config 2, mobile gate 6, server 66 incl. 5 new
+  store/matcher tests + 3 new REST tests with a fixed-vector embedder).
+- Next steps for you: the embedder seam is `FaceEmbedder` in
+  `apps/server/src/faces/embed.ts` - plug the Snapbook pipeline there
+  (MVP.md Q4); threshold 0.75 is a guess until measured.
+
 ## Blocked
 
-(nothing)
+- **M5 real face embeddings: @vladmandic/human 3.3.6 does not run here**
+  (3 strikes, stubbed per the milestone's escape hatch; packages removed):
+  1. `@tensorflow/tfjs-node` installed without its native binding (npm
+     blocked its download script); fixed via approve + rebuild, but fresh
+     clones would need the same manual step.
+  2. Rebuild split files across `lib/napi-v8` (binding) and `lib/napi-v10`
+     (tensorflow.dll); needed a manual DLL copy to load.
+  3. `human.detect()` throws an internal
+     `(0, util_1.isNullOrUndefined) is not a function` on both Tensor and
+     Buffer inputs even though models load fine - not workaround-able.
+  Consequence: `POST /people` returns 400 "no face found" until a real
+  `FaceEmbedder` is plugged in; matching stays silent (strangers described
+  generically, which is the safe direction).
