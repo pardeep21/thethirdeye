@@ -1,0 +1,1 @@
+{"compilerOptions": {"allowImportingTsExtensions": true,"noEmit": true,"strict": true},"extends": "expo/tsconfig.base","include": ["src"]}
