@@ -13,8 +13,10 @@ import {
 } from "./protocol.js";
 import { LatestFrameStore } from "./store.js";
 import { createAdapters, providerFromEnv } from "./adapters/factory.js";
-import { DecisionEngine } from "./decision.js";
-import { renderProactive } from "./phrases.js";
+import { DecisionEngine, FACE_MATCH_THRESHOLD } from "./decision.js";
+import { renderFind, renderProactive, summarizePeople, type PersonBits } from "./phrases.js";
+import { routeIntent } from "./intent.js";
+import type { FaceHit, TriageResult } from "./protocol.js";
 
 export interface ServerHandles {
   port: number;
@@ -27,6 +29,7 @@ export async function startServer(port: number): Promise<ServerHandles> {
   const frames = new LatestFrameStore();
   // TODO(M6): language comes from the phone settings screen; pa until then.
   const engine = new DecisionEngine((e) => renderProactive(e, "pa"));
+  let lastPerception: { triage: TriageResult; faces: FaceHit[] } | null = null;
 
   const http = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (req.method === "GET" && req.url === "/health") {
@@ -59,6 +62,92 @@ export async function startServer(port: number): Promise<ServerHandles> {
     });
   });
 
+  const drain = (): SpeakMessage[] =>
+    engine
+      .takeSpeak()
+      .map((a) => ({ type: "speak", text: a.text, lang: a.lang, priority: a.priority }));
+
+  function whoParts(): PersonBits[] {
+    if (!lastPerception) return [];
+    const known = lastPerception.faces.filter(
+      (h) => h.personId && h.name && h.score >= FACE_MATCH_THRESHOLD
+    );
+    const parts: PersonBits[] = known.map((h, i) => {
+      const p = lastPerception?.triage.people[i];
+      return { name: h.name ?? undefined, position: p?.position ?? "centre", distance: p?.distance ?? "near" };
+    });
+    for (const p of lastPerception.triage.people.slice(known.length)) {
+      parts.push({ position: p.position, distance: p.distance, gender: p.gender });
+    }
+    return parts;
+  }
+
+  async function handleCommand(transcript: string): Promise<void> {
+    const intent = routeIntent(transcript);
+    const frame = frames.get();
+    switch (intent.kind) {
+      case "mute":
+        engine.setMuted(true);
+        return;
+      case "unmute":
+        engine.setMuted(false);
+        return;
+      case "unknown":
+        console.log(`ignoring unparseable command: ${transcript}`);
+        return;
+      case "describe": {
+        if (!frame) {
+          console.log("describe with no frame yet; staying silent");
+          return;
+        }
+        engine.cancel();
+        engine.answer(await adapters.answer.describe(frame.jpeg, transcript), "pa");
+        return;
+      }
+      case "read": {
+        if (!frame) {
+          console.log("read with no frame yet; staying silent");
+          return;
+        }
+        engine.cancel();
+        engine.answer(await adapters.answer.read(frame.jpeg), "pa");
+        return;
+      }
+      case "find": {
+        engine.cancel();
+        const box = frame ? ((await adapters.finder.find(frame.jpeg, intent.noun))[0] ?? null) : null;
+        engine.answer(renderFind(intent.noun, box, "pa"), "pa");
+        return;
+      }
+      case "who": {
+        engine.cancel();
+        engine.answer(summarizePeople(whoParts(), "pa"), "pa");
+        return;
+      }
+      case "howmuch": {
+        engine.cancel();
+        if (!frame) {
+          engine.answer(renderProactive({ kind: "NOTE_UNSURE" }, "pa").text, "pa");
+          return;
+        }
+        const fresh = await adapters.triage.triage(frame.jpeg);
+        const top = fresh.notes[0];
+        if (top && top.denomination !== null && top.confidence >= 0.5) {
+          engine.answer(
+            renderProactive(
+              { kind: "NOTE_SEEN", denominations: [top.denomination], confidences: [top.confidence] },
+              "pa"
+            ).text,
+            "pa"
+          );
+        } else {
+          engine.answer(renderProactive({ kind: "NOTE_UNSURE" }, "pa").text, "pa");
+        }
+        return;
+      }
+    }
+  }
+
   async function handleMessage(raw: string): Promise<SpeakMessage[]> {
     let msg: unknown;
     try {
@@ -74,16 +163,27 @@ export async function startServer(port: number): Promise<ServerHandles> {
           adapters.triage.triage(jpeg),
           adapters.faces.match(jpeg),
         ]);
+        lastPerception = { triage: result, faces: hits };
         engine.onFrame(result, hits);
       } catch (err) {
         console.error("perception failed:", err instanceof Error ? err.message : err);
         return [];
       }
-      return engine.takeSpeak().map((a) => ({ type: "speak", text: a.text, lang: a.lang, priority: a.priority }));
+      return drain();
     }
     if (isAudioMessage(msg)) {
-      // TODO(M4): STT + intent router.
-      return [];
+      try {
+        const pcm = Buffer.from(msg.pcm16Base64, "base64");
+        const transcript = await adapters.stt.transcribe(pcm);
+        if (transcript.trim()) {
+          console.log(`heard: ${transcript}`);
+          await handleCommand(transcript);
+        }
+      } catch (err) {
+        console.error("command failed:", err instanceof Error ? err.message : err);
+        return [];
+      }
+      return drain();
     }
     if (isCommandMessage(msg)) {
       if (msg.name === "mute") engine.setMuted(true);

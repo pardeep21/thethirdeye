@@ -51,7 +51,7 @@ export class MockSpeechToText implements SpeechToText {
   constructor(private readonly fixed = "ki hai saamne") {}
 
   async transcribe(_audio: Buffer): Promise<string> {
-    return this.fixed;
+    return process.env.MOCK_STT_TEXT ?? this.fixed;
   }
 }
 

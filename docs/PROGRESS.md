@@ -95,6 +95,30 @@
 - Next steps for you: the 30 Oct night TTS voice test (pa-IN vs hi-IN)
   decides whether these templates need rescripting.
 
+## M4 - Intent router + command wiring (done)
+
+- `apps/server/src/intent.ts`: keyword router for describe/read/find/who/
+  howmuch/mute/unmute over pa/hi/en text (Roman, Gurmukhi, Devanagari).
+  Token-exact matching; mute/unmute only on <=3-word utterances so "eh bol
+  ki hai" stays a describe; empty-noun find falls back to describe; unknown
+  stays silent (logged).
+- Server audio path: STT -> route -> describe/read via Spark answer, find
+  via finder + `renderFind`, who via `summarizePeople` over last
+  perception, howmuch via fresh triage read, mute/unmute to the engine.
+  Commands `cancel()` P2/P3 first; answers speak as P1 behind queued cash.
+- `MOCK_STT_TEXT` env overrides the mock transcript (used by tests).
+- How to run: `npm test -w @eyesmart/server`.
+- Tests: 66 pass total (config 2, mobile gate 6, server 58 incl. 8 new
+  router tests + 3 new audio-integration tests).
+- Notes/limits: "kimat/daam" (price) and "keda" (which) left unknown on
+  purpose (ambiguous); who-maps faces to people positions positionally
+  (approximation); TTS lang tag is "pa" until M6 settings; command-P1 vs
+  in-flight cash-P1 race: FIFO covers queued cash, and the STT+model
+  pipeline outlasts any <=1.5 s cash utterance in practice, so the phone
+  never needs to preempt cash for a command.
+- Next steps for you: try real phrasings in the field test; the keyword
+  lists are the tuning surface.
+
 ## Blocked
 
 (nothing)
