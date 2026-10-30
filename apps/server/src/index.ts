@@ -14,6 +14,7 @@ import {
 import { LatestFrameStore } from "./store.js";
 import { createAdapters, providerFromEnv } from "./adapters/factory.js";
 import { DecisionEngine } from "./decision.js";
+import { renderProactive } from "./phrases.js";
 
 export interface ServerHandles {
   port: number;
@@ -24,8 +25,8 @@ export async function startServer(port: number): Promise<ServerHandles> {
   const provider = providerFromEnv();
   const adapters = createAdapters(provider);
   const frames = new LatestFrameStore();
-  // TODO(M3): pass the phrase builder as the engine renderer.
-  const engine = new DecisionEngine();
+  // TODO(M6): language comes from the phone settings screen; pa until then.
+  const engine = new DecisionEngine((e) => renderProactive(e, "pa"));
 
   const http = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (req.method === "GET" && req.url === "/health") {

@@ -75,6 +75,26 @@
   until M5 measures it.
 - Next steps for you: none for M2; phrases land in M3.
 
+## M3 - Phrase builder (done)
+
+- `apps/server/src/phrases.ts`: `renderProactive` (plugged into the engine;
+  server now speaks "ਪੰਜ ਸੌ ਦਾ ਨੋਟ"), `summarizePeople` for "kaun hai?"
+  (used by M4), `renderFind` for SAM results. Cash in Gurmukhi, people
+  lines in Roman code-mix, exactly as MVP.md section 1 specifies, plus en
+  (manifest-style) and hi (Devanagari) variants. Default lang pa until the
+  M6 settings screen.
+- How to run: `npm test -w @eyesmart/server`.
+- Tests: 55 pass total (config 2, mobile gate 6, server 47 incl. 12 new
+  phrase tests asserting every MVP.md line verbatim).
+- Notes/limits: position words for left/right+far ("left side door") and
+  find-centre ("saamne") are my interpretations - MVP.md only pins
+  "counter te"/"door kol"/"left side" and "right side, neeche"; unknown
+  gender defaults to banda/man/aadmi; known-arrival uses masculine
+  "ਆ ਗਿਆ" (no gender field in enrollment); script choice (Gurmukhi vs
+  Roman for people lines) follows the spec but awaits your TTS voice test.
+- Next steps for you: the 30 Oct night TTS voice test (pa-IN vs hi-IN)
+  decides whether these templates need rescripting.
+
 ## Blocked
 
 (nothing)
