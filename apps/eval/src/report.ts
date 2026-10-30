@@ -48,7 +48,7 @@ export function buildMarkdown(input: ReportInput): string {
   const tokens = okCalls.reduce((s, c) => s + (c.usage?.totalTokens ?? 0), 0);
 
   const out: string[] = [];
-  out.push("# eyesmart-spike results", "");
+  out.push("# thethirdeye-spike results", "");
   out.push(`Run at (UTC): ${startedAt.toISOString()}`);
   for (const line of runInfo) out.push(line);
   out.push(`Notes sizes: ${sizes.map((s) => `${s}px longest side`).join(", ")} (downscale only; actual dims per call)`);

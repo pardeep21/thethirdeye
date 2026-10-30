@@ -1,9 +1,9 @@
-# EyeSmart build progress (overnight agent log)
+# TheThirdEye build progress (overnight agent log)
 
 ## M0 - Monorepo skeleton (done)
 
-- Moved `eyesmart-spike` CLI into `apps/eval` unchanged (renamed package to
-  `@eyesmart/eval`); `data/` and its README moved with it.
+- Moved `thethirdeye-spike` CLI into `apps/eval` unchanged (renamed package to
+  `@thethirdeye/eval`); `data/` and its README moved with it.
 - New `apps/server` (Node 20+, `ws`, plain `node:http`): `GET /health`,
   `GET /frame/latest`, WS `frame` -> MockVision triage -> `speak`.
   Mock returns a fixed 500 note so the full path speaks without any key.
@@ -47,7 +47,7 @@
 - Stubs: finder/STT/faces are mock-only (real SAM/STT in M4 wiring, faces
   in M5); cost estimates for non-meta providers are omitted (rates unknown).
 - Notes: npm here predates the `workspace:` protocol, so eval depends on
-  `@eyesmart/server` via semver `^0.1.0` (still linked locally); eval
+  `@thethirdeye/server` via semver `^0.1.0` (still linked locally); eval
   prebuild/pretypecheck build the server first for its `.d.ts`.
 - Next steps for you: collect the clear/hard note sets (MVP.md section 6),
   then `notes --provider meta --limit 5` for eval run #1.
@@ -65,7 +65,7 @@
 - Server rewired: frame -> triage + faces in parallel -> engine ->
   all due speaks; mute/unmute/cancel commands wired; perception errors
   stay silent.
-- How to run: `npm test -w @eyesmart/server`.
+- How to run: `npm test -w @thethirdeye/server`.
 - Tests: 43 pass total (config 2, mobile gate 6, server 35 incl. 24 new
   engine tests from fake-TriageResult sequences with explicit timestamps).
 - Stubs/limits: mute/unmute speak no confirmation (spec is silent on it);
@@ -83,7 +83,7 @@
   lines in Roman code-mix, exactly as MVP.md section 1 specifies, plus en
   (manifest-style) and hi (Devanagari) variants. Default lang pa until the
   M6 settings screen.
-- How to run: `npm test -w @eyesmart/server`.
+- How to run: `npm test -w @thethirdeye/server`.
 - Tests: 55 pass total (config 2, mobile gate 6, server 47 incl. 12 new
   phrase tests asserting every MVP.md line verbatim).
 - Notes/limits: position words for left/right+far ("left side door") and
@@ -107,7 +107,7 @@
   perception, howmuch via fresh triage read, mute/unmute to the engine.
   Commands `cancel()` P2/P3 first; answers speak as P1 behind queued cash.
 - `MOCK_STT_TEXT` env overrides the mock transcript (used by tests).
-- How to run: `npm test -w @eyesmart/server`.
+- How to run: `npm test -w @thethirdeye/server`.
 - Tests: 66 pass total (config 2, mobile gate 6, server 58 incl. 8 new
   router tests + 3 new audio-integration tests).
 - Notes/limits: "kimat/daam" (price) and "keda" (which) left unknown on
@@ -122,14 +122,14 @@
 ## M5 - Face enrollment + SQLite store, embedder STUBBED (done with a Blocked item)
 
 - `apps/server/src/faces/`: real `PeopleStore` (better-sqlite3, embeddings
-  only, `EYESMART_DB`), real `StoredFaceMatcher` (cosine, threshold 0.75)
+  only, `THETHIRDEYE_DB`), real `StoredFaceMatcher` (cosine, threshold 0.75)
   behind the `FaceMatcher` interface, stub `FaceEmbedder` (finds nothing,
   fail-closed). REST: `POST /people` (requires `consent: true`, 1-10 base64
   photos, per-photo no-face 400s), `GET /people`, `DELETE /people/:id`
   (embeddings deleted immediately). Photos are never written to disk.
 - Factory faces are store-backed in every provider (mock included), so
   enrollment works without keys once a real embedder exists.
-- How to run: `npm test -w @eyesmart/server`; server owns `./eyesmart.db`
+- How to run: `npm test -w @thethirdeye/server`; server owns `./thethirdeye.db`
   unless tests inject `:memory:`.
 - Tests: 74 pass total (config 2, mobile gate 6, server 66 incl. 5 new
   store/matcher tests + 3 new REST tests with a fixed-vector embedder).
@@ -152,7 +152,7 @@
   photo captures with retake, submit to `POST /people`, enrolled list with
   remove. Camera preview shows on this screen only. Shared `captureSmall`
   (768px q70) and `http.ts` helpers; frame uploader refactored onto them.
-- How to run: `npm run typecheck -w @eyesmart/mobile`; device run needs
+- How to run: `npm run typecheck -w @thethirdeye/mobile`; device run needs
   your Android SDK (`npx expo run:android`).
 - Tests: 76 pass total (config 2, mobile gate 6, server 68 incl. 2 new
   settings tests). Mobile UI/PTT/enrollment are typecheck-only (no device).
@@ -163,6 +163,23 @@
 - Next steps for you: on-device pass - hotspot URL, camera permission,
   volume PTT, enrollment with real faces once an embedder exists, and the
   TTS voice test from M3.
+
+## Fix - meta triage robustness + real spend (done, uncommitted)
+
+- Root cause of "triage output is not JSON": muse-spark-1.3 is a reasoning
+  model (dev.meta.ai/docs/reasoning) and the old 80-token budget starved
+  visible output. Fix: `TRIAGE_MAX_TOKENS` default 400,
+  `reasoning_effort: "minimal"` (lowest level Spark supports; "none"
+  400s), robust extraction (direct -> ``` fences -> balanced-brace scan ->
+  validate), and prompt-only fallback if an endpoint rejects `json_object`.
+- Every OpenAI-compat call now logs raw request/response to
+  `apps/eval/debug/<file>_<size>.json` (key never included).
+- Spend: usage/cost recorded on failed parses too; per-model price table
+  (`muse-spark-1.3` 1.25/4.25, `-contributor` 0.10/0.20).
+- Verified live: `500_03.jpg` 2/2 correct, $0.000212 spend, debug shows
+  `finish_reason: stop` with 124/151 reasoning tokens even at minimal.
+- Tests: 88 pass (config 2, eval 3 new, mobile gate 6, server 77 incl. 9
+  new parser/fallback/debug/config tests). No commit (not requested).
 
 ## Blocked
 

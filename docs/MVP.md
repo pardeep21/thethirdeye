@@ -1,4 +1,4 @@
-# EyeSmart — MVP Spec
+# TheThirdEye — MVP Spec
 
 > Hackathon build: 30 Oct → 2 Nov 2026 (code), 3 Nov (field test + demo shoot), 4 Nov (submit).
 > Device for MVP: Samsung S23 Ultra chest-mounted + Galaxy Buds 2 (backup: Realme Buds Wireless 5 ANC).
@@ -232,7 +232,7 @@ The rule of thumb: **a stale message is worse than no message.** Anything that c
 | Mobile | **Expo SDK (latest) + dev build**, TypeScript | `react-native-vision-camera` (frames), `expo-speech` (TTS), `react-native-volume-manager` (volume-key push-to-talk), `expo-av` (record), `expo-keep-awake` |
 | Server | **Node 20 + TypeScript**, `ws`, `openai` SDK (pointed at the Meta/OpenRouter base URL), `better-sqlite3`, `sharp` | One process. Runs on a laptop for dev and Render/Railway/Fly for the judges' build. |
 | Faces | Reuse the Snapbook pipeline, or `@vladmandic/human` (tfjs-node) | Embeddings only. No raw face images kept after enrollment. |
-| Eval | `eyesmart-spike` CLI (from earlier) → becomes `apps/eval` | Same test photos run against any adapter. |
+| Eval | `thethirdeye-spike` CLI (from earlier) → becomes `apps/eval` | Same test photos run against any adapter. |
 | Repo | Monorepo `apps/mobile`, `apps/server`, `apps/eval`, `docs/` | Public on GitHub. APK in Releases. |
 
 Judges' "working build": an APK plus a one-click server deploy. The server reads `META_API_KEY` or `OPENROUTER_API_KEY` from env, and `PROVIDER=mock` lets them run it with no key at all.
@@ -322,7 +322,7 @@ Generated on the fly per milestone for Muse Code. Sequence:
 | Time | Shot | Audio / captions |
 |---|---|---|
 | 0:00–0:20 | Him opening the shop. Close-up of his eyes/glasses, then hands on the counter. | His voice, one line about his day (Punjabi, English captions) |
-| 0:20–0:55 | **Split screen.** Left: a general assistant app. He has to stop, pick up the phone, open the app, point it, and ask "what note is this?" Right: EyeSmart. The customer holds out a note and he hears it instantly, hands still free. | Caption: *"Reactive: you ask. Proactive: it notices."* Earbud audio shown as on-screen captions. |
+| 0:20–0:55 | **Split screen.** Left: a general assistant app. He has to stop, pick up the phone, open the app, point it, and ask "what note is this?" Right: TheThirdEye. The customer holds out a note and he hears it instantly, hands still free. | Caption: *"Reactive: you ask. Proactive: it notices."* Earbud audio shown as on-screen captions. |
 | 0:55–1:30 | A real sale: 3 notes in a row, one folded ("pakka nahi, note sidha karo"), he corrects it. | Show timer overlays with latency |
 | 1:30–2:00 | His brother walks in → "Ravi aa gaya". A stranger walks in → "Ik banda, around 30, door kol." | Caption: *"Only people who agreed are recognised."* |
 | 2:00–2:25 | He presses the button: "Eh padh" on a packet; "Kainchi kithe hai?" → SAM box overlay → "right side, neeche" | Show the SAM mask on screen |

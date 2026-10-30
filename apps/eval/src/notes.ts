@@ -1,20 +1,32 @@
 // Test 1 — notes: run a server VisionTriage provider over
 // data/notes/<label>_*.jpg and score against the label's leading digits
 // (supports 10_1.jpg and 500_new_front_03.jpg). Sequential, one size at a time.
+// Every OpenAI-compat call logs raw request/response to debug/<file>_<size>.json.
 
 import { readFileSync } from "node:fs";
-import { basename } from "node:path";
-import { createAdapters, type ProviderName } from "@eyesmart/server/adapters";
+import { basename, dirname, extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createAdapters, type NamedTriage, type ProviderName } from "@thethirdeye/server/adapters";
 import { estimateVisionCost } from "./client.js";
-import type { NoteCall } from "./types.js";
+import type { NoteCall, TokenUsage } from "./types.js";
 
 export const DENOMINATIONS = [10, 20, 50, 100, 200, 500];
+
+/** Raw-call debug dir: EVAL_DEBUG_DIR or apps/eval/debug/. */
+export function debugDirFromEnv(): string {
+  if (process.env.EVAL_DEBUG_DIR) return process.env.EVAL_DEBUG_DIR;
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "debug");
+}
 
 export function parseExpected(filename: string): number | null {
   const m = basename(filename).match(/^(\d+)/);
   if (!m) return null;
   const v = Number(m[1]);
   return DENOMINATIONS.includes(v) ? v : null;
+}
+
+export function debugLabelFor(filename: string, size: number): string {
+  return `${basename(filename, extname(filename))}_${size}`;
 }
 
 async function loadSharp(): Promise<typeof import("sharp")> {
@@ -27,12 +39,30 @@ async function loadSharp(): Promise<typeof import("sharp")> {
   }
 }
 
+function usageAndCost(
+  triage: NamedTriage,
+  provider: ProviderName
+): { usage: TokenUsage | undefined; costUsd: number | undefined } {
+  const last = triage.getLastUsage();
+  const usage = last
+    ? {
+        promptTokens: last.promptTokens,
+        completionTokens: last.completionTokens,
+        totalTokens: last.promptTokens + last.completionTokens,
+      }
+    : undefined;
+  // Meta rates are the only ones we know; other providers report latency/accuracy only.
+  const costUsd = provider === "meta" ? estimateVisionCost(triage.name, usage) : undefined;
+  return { usage, costUsd };
+}
+
 export async function runNotes(
   files: string[],
   sizes: number[],
-  provider: ProviderName
+  provider: ProviderName,
+  triageOverride?: NamedTriage
 ): Promise<NoteCall[]> {
-  const { triage } = createAdapters(provider);
+  const { triage } = triageOverride ? { triage: triageOverride } : createAdapters(provider, { debugDir: debugDirFromEnv() });
   const sharp = await loadSharp();
   const results: NoteCall[] = [];
   for (const size of sizes) {
@@ -48,7 +78,34 @@ export async function runNotes(
           .jpeg({ quality: 85 })
           .toBuffer({ resolveWithObject: true });
         const start = Date.now();
-        const result = await triage.triage(data);
+        let result;
+        try {
+          result = await triage.triage(data, debugLabelFor(name, size));
+        } catch (err) {
+          // Failed calls still consumed tokens: record usage + cost, not $0.
+          const message = err instanceof Error ? err.message : String(err);
+          const latencyMs = Date.now() - start;
+          const { usage, costUsd } = usageAndCost(triage, provider);
+          console.log(`  -> ERROR: ${message} (${latencyMs}ms)`);
+          results.push({
+            test: "notes",
+            file: name,
+            model: triage.name,
+            imageSize: `${size}px`,
+            latencyMs,
+            attempts: 1,
+            usage,
+            costUsd,
+            actualDims: `${info.width}x${info.height}`,
+            expected,
+            predicted: null,
+            confidence: null,
+            noteVisible: null,
+            raw: "",
+            error: message,
+          });
+          continue;
+        }
         const latencyMs = Date.now() - start;
         const top = result.notes[0];
         const predicted = top?.denomination ?? null;
@@ -57,14 +114,7 @@ export async function runNotes(
         console.log(
           `  -> predicted ${predicted ?? "null"} (conf ${confidence ?? "?"}) ${ok ? "OK" : "WRONG"} ${latencyMs}ms`
         );
-        const last = triage.getLastUsage();
-        const usage = last
-          ? {
-              promptTokens: last.promptTokens,
-              completionTokens: last.completionTokens,
-              totalTokens: last.promptTokens + last.completionTokens,
-            }
-          : undefined;
+        const { usage, costUsd } = usageAndCost(triage, provider);
         results.push({
           test: "notes",
           file: name,
@@ -73,8 +123,7 @@ export async function runNotes(
           latencyMs,
           attempts: 1,
           usage,
-          // Meta rates are the only ones we know; other providers report latency/accuracy only.
-          costUsd: provider === "meta" ? estimateVisionCost(triage.name, usage) : undefined,
+          costUsd,
           actualDims: `${info.width}x${info.height}`,
           expected,
           predicted,

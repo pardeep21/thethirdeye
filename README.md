@@ -1,10 +1,10 @@
-# EyeSmart (working name)
+# TheThirdEye (working name)
 
 A hands-free, proactive "second pair of eyes" for a blind shopkeeper.
 See [docs/MANIFEST.md](docs/MANIFEST.md) (vision, principles, honesty statement)
 and [docs/MVP.md](docs/MVP.md) (build spec). Progress log: [docs/PROGRESS.md](docs/PROGRESS.md).
 
-> EyeSmart is an assistive aid, not a medical or safety device. It reads
+> TheThirdEye is an assistive aid, not a medical or safety device. It reads
 > currency denominations and describes surroundings using AI, and it can be
 > wrong. It does not detect counterfeit or damaged notes. Important amounts
 > should be confirmed by another person.
@@ -56,7 +56,7 @@ hotspot gateway); change in Settings (M6) or `apps/mobile/src/config.ts`.
   change gate, 768px JPEG uploads over WS, Android TTS speech-out.
 - `apps/server` - Node + `ws`: latest-frame store, model adapters
   (mock-first), decision engine, phrase builder, REST enrollment.
-- `apps/eval` - `eyesmart-spike` benchmark CLI: any provider over
+- `apps/eval` - `thethirdeye-spike` benchmark CLI: any provider over
   `data/notes/<label>_*.jpg` -> `results.md`.
 - `config/app-name.ts` - product naming source of truth + consistency test.
 - `docs/` - MANIFEST, MVP spec, PROGRESS log.

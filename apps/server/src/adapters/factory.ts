@@ -7,6 +7,7 @@ import type {
   ProviderName,
 } from "./index.js";
 import { providerFromEnv } from "./index.js";
+import { triageMaxTokensFromEnv } from "./openaiCompat.js";
 
 export { providerFromEnv };
 export type * from "./index.js";
@@ -28,6 +29,19 @@ function needEnv(name: string): string {
 
 export interface AdapterDeps {
   store?: PeopleStore;
+  /** When set, OpenAI-compat triage writes raw request/response logs here. */
+  debugDir?: string;
+}
+
+/**
+ * Meta reasoning effort for triage (dev.meta.ai/docs/reasoning): minimal is
+ * the lowest level Muse Spark supports ("none" returns HTTP 400).
+ * META_REASONING_EFFORT overrides; "off" omits the parameter.
+ */
+export function metaReasoningEffortFromEnv(): string | undefined {
+  const raw = (process.env.META_REASONING_EFFORT ?? "minimal").toLowerCase();
+  if (raw === "off" || raw === "unset") return undefined;
+  return process.env.META_REASONING_EFFORT ?? "minimal";
 }
 
 export function createAdapters(
@@ -51,6 +65,9 @@ export function createAdapters(
           baseURL: process.env.META_BASE_URL ?? "https://api.meta.ai/v1",
           model: process.env.META_MODEL ?? "muse-spark-1.3",
           apiKey: needEnv("META_API_KEY"),
+          maxTokens: triageMaxTokensFromEnv(),
+          reasoningEffort: metaReasoningEffortFromEnv(),
+          debugDir: deps?.debugDir,
         }),
         answer: new OpenAICompatAnswer({
           baseURL: process.env.META_BASE_URL ?? "https://api.meta.ai/v1",
@@ -65,6 +82,8 @@ export function createAdapters(
           baseURL: "https://openrouter.ai/api/v1",
           model: process.env.OPENROUTER_MODEL ?? "meta/muse-spark-1.3",
           apiKey: needEnv("OPENROUTER_API_KEY"),
+          maxTokens: triageMaxTokensFromEnv(),
+          debugDir: deps?.debugDir,
         }),
         answer: new OpenAICompatAnswer({
           baseURL: "https://openrouter.ai/api/v1",
@@ -80,7 +99,7 @@ export function createAdapters(
       const model = process.env.OPENAI_MODEL ?? (provider === "local" ? "muse-glimmer" : "gpt-4o-mini");
       const apiKey = process.env.OPENAI_API_KEY ?? (provider === "local" ? "ollama" : needEnv("OPENAI_API_KEY"));
       return {
-        triage: new OpenAICompatTriage({ baseURL, model, apiKey }),
+        triage: new OpenAICompatTriage({ baseURL, model, apiKey, maxTokens: triageMaxTokensFromEnv(), debugDir: deps?.debugDir }),
         answer: new OpenAICompatAnswer({ baseURL, model, apiKey }),
         ...mocks,
       };

@@ -1,4 +1,4 @@
-// EyeSmart server: plain node:http + ws, one process.
+// TheThirdEye server: plain node:http + ws, one process.
 // Frame in -> triage + faces -> decision engine -> speak out.
 // Run: PROVIDER=mock node dist/index.js
 
@@ -322,7 +322,7 @@ const invokedDirectly = process.argv[1] === fileURLToPath(import.meta.url);
 if (invokedDirectly) {
   const port = Number(process.env.PORT ?? 8080);
   startServer(port)
-    .then((h) => console.log(`eyesmart server on :${h.port} (PROVIDER=${process.env.PROVIDER ?? "mock"})`))
+    .then((h) => console.log(`thethirdeye server on :${h.port} (PROVIDER=${process.env.PROVIDER ?? "mock"})`))
     .catch((err: unknown) => {
       console.error(err instanceof Error ? err.message : err);
       process.exit(1);

@@ -1,4 +1,4 @@
-// EyeSmart chest-camera app: hidden back camera with a 32x32 change gate,
+// TheThirdEye chest-camera app: hidden back camera with a 32x32 change gate,
 // 768px JPEG q70 uploads over WS, Android TTS out, volume-key push-to-talk,
 // plus settings and face-enrollment screens for a sighted helper.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -107,7 +107,7 @@ export default function App() {
 
   const frameOutput = useGateOutput(onGray);
   const outputs = useMemo(() => [photoOutput, frameOutput], [photoOutput, frameOutput]);
-  const appName = Constants.expoConfig?.name ?? "EyeSmart";
+  const appName = Constants.expoConfig?.name ?? "TheThirdEye";
 
   const changeLang = useCallback((next: SpeakLang) => {
     setLang(next);

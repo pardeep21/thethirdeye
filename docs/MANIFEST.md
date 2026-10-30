@@ -1,4 +1,4 @@
-# EyeSmart — Manifest
+# TheThirdEye — Manifest
 
 > Working name. A hands-free, proactive "second pair of eyes" for a blind shopkeeper.
 
@@ -22,7 +22,7 @@ Existing assistants can answer these questions, but only when he stops, picks up
 
 ## 2. Vision
 
-EyeSmart turns a camera and an earpiece into a quiet assistant that watches the shop *with* him. A phone on his chest (Meta glasses later) sees what he would see. An AI agent built on Meta's models decides what actually matters, and he hears a few calm words in his ear: *"Paanch sau da note."* / *"Ravi aaya hai, counter te."* / *"A man, around 30, near the door."* It speaks up when something relevant happens and stays silent the rest of the time. It answers instantly when he asks. It doesn't replace his judgment, his memory, or his cane. It gives him back the information his eyes used to give him, without needing his hands.
+TheThirdEye turns a camera and an earpiece into a quiet assistant that watches the shop *with* him. A phone on his chest (Meta glasses later) sees what he would see. An AI agent built on Meta's models decides what actually matters, and he hears a few calm words in his ear: *"Paanch sau da note."* / *"Ravi aaya hai, counter te."* / *"A man, around 30, near the door."* It speaks up when something relevant happens and stays silent the rest of the time. It answers instantly when he asks. It doesn't replace his judgment, his memory, or his cane. It gives him back the information his eyes used to give him, without needing his hands.
 
 **Who it's for:** first and specifically, my friend, his shop, his currency (INR), his languages (Punjabi + English mix, Hindi understood). If it works for his real day, it can be extended to other blind and low-vision people who work with their hands: shopkeepers, vendors, craftspeople.
 
@@ -43,7 +43,7 @@ EyeSmart turns a camera and an earpiece into a quiet assistant that watches the 
 
 ## 4. What we will NOT do
 
-- **We will not claim to detect counterfeit notes.** EyeSmart tells him the denomination. It does not verify that a note is genuine or check it for damage. He already judges that by touch and experience.
+- **We will not claim to detect counterfeit notes.** TheThirdEye tells him the denomination. It does not verify that a note is genuine or check it for damage. He already judges that by touch and experience.
 - **We will not guarantee correctness of currency reading.** The app carries a clear disclaimer: denominations are an aid, not a verified count; anything important should be confirmed by another person.
 - **We will not identify strangers.** No face search, no "who is this" for people who haven't opted in, no building profiles of customers.
 - **We will not record or upload video for storage.** Frames are analysed and dropped.
@@ -57,7 +57,7 @@ EyeSmart turns a camera and an earpiece into a quiet assistant that watches the 
 
 **Why not the existing tools?** Gemini Live, Meta AI and Be My Eyes are impressive, but they are general and **reactive**: the user has to ask, usually while holding a phone, and the assistant forgets the context once the conversation ends. That works for a curious question at home. It doesn't work behind a counter with a customer waiting and both hands busy.
 
-| | General assistants | EyeSmart |
+| | General assistants | TheThirdEye |
 |---|---|---|
 | Who starts the conversation | The user, every time | The system, when something relevant happens |
 | Hands | Hold a phone / tap to ask | Hands-free: chest camera / glasses + earpiece |
@@ -65,7 +65,7 @@ EyeSmart turns a camera and an earpiece into a quiet assistant that watches the 
 | Default behaviour | Talk at length when asked | Stay silent; speak in a few words when it matters |
 | Language & money | Generic | INR denominations, Punjabi + English mix |
 
-**The core idea: reactive assistants answer questions; EyeSmart notices for you.**
+**The core idea: reactive assistants answer questions; TheThirdEye notices for you.**
 
 **Why now?** Fast multimodal models (Meta's Muse family via the Meta Model API, and open-weight models that can run closer to the device) have made it possible to look at a live camera stream, decide what is important, and respond in about a second at a cost that works for daily use. Smart glasses with cameras and open-ear audio are becoming normal consumer hardware. The parts finally exist; what's missing is a product built around one real person's day.
 
@@ -75,4 +75,4 @@ EyeSmart turns a camera and an earpiece into a quiet assistant that watches the 
 
 ## 6. Honesty statement (to appear in the app and the repo)
 
-> EyeSmart is an assistive aid, not a medical or safety device. It reads currency denominations and describes surroundings using AI, and it can be wrong. It does not detect counterfeit or damaged notes. Important amounts should be confirmed by another person. Face recognition works only for people who have agreed to be enrolled. EyeSmart supports the user's own judgment and mobility aids; it does not replace them.
+> TheThirdEye is an assistive aid, not a medical or safety device. It reads currency denominations and describes surroundings using AI, and it can be wrong. It does not detect counterfeit or damaged notes. Important amounts should be confirmed by another person. Face recognition works only for people who have agreed to be enrolled. TheThirdEye supports the user's own judgment and mobility aids; it does not replace them.

@@ -27,6 +27,7 @@ export interface FaceMatcher {
 export interface NamedTriage extends VisionTriage {
   readonly name: string;
   getLastUsage(): { promptTokens: number; completionTokens: number } | undefined;
+  triage(img: Buffer, debugLabel?: string): Promise<TriageResult>;
 }
 
 export interface AdapterSet {

@@ -17,10 +17,13 @@ export const DEFAULT_BASE_URL = "https://api.meta.ai/v1";
 export const DEFAULT_VISION_MODEL = "muse-spark-1.3";
 export const DEFAULT_ASR_MODEL = "muse-voice-transcribe-1.0";
 
-/** USD per 1M tokens. Standard tier covers muse-spark-1.3/1.2/1.1. */
-const VISION_RATES = {
-  standard: { input: 1.25, output: 4.25, cached: 0.15 },
-  contributor: { input: 0.1, output: 0.2, cached: 0.002 },
+/**
+ * USD per 1M tokens, keyed by exact model id (Meta Model API pricing,
+ * checked 2026-10-30). Unknown ids fall back to standard rates.
+ */
+export const MODEL_PRICES: Record<string, { input: number; output: number; cached: number }> = {
+  "muse-spark-1.3": { input: 1.25, output: 4.25, cached: 0.15 },
+  "muse-spark-1.3-contributor": { input: 0.1, output: 0.2, cached: 0.002 },
 };
 
 const MAX_RETRIES = 5;
@@ -200,9 +203,10 @@ export async function chatCompletions(
 /** Docs-based cost estimate. The API does not return cost, so this is never billed cost. */
 export function estimateVisionCost(model: string, usage?: TokenUsage): number | undefined {
   if (!usage) return undefined;
-  const rates = model.includes("contributor")
-    ? VISION_RATES.contributor
-    : VISION_RATES.standard;
+  const id = model.includes(":") ? model.slice(model.lastIndexOf(":") + 1) : model;
+  const rates =
+    MODEL_PRICES[id] ??
+    (id.includes("contributor") ? MODEL_PRICES["muse-spark-1.3-contributor"] : MODEL_PRICES["muse-spark-1.3"]);
   const cached = usage.cachedTokens ?? 0;
   const fresh = Math.max(0, usage.promptTokens - cached);
   return (fresh * rates.input + cached * rates.cached + usage.completionTokens * rates.output) / 1e6;

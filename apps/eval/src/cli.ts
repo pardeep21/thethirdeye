@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-// eyesmart-spike: benchmark vision + transcription for a blind shopkeeper's
+// thethirdeye-spike: benchmark vision + transcription for a blind shopkeeper's
 // assistant. The notes test runs any server VisionTriage provider over
 // data/notes/<label>_*.jpg; scenes/audio still use the direct Meta client.
 //
 // Usage:
-//   eyesmart-spike [notes|scenes|audio|all] [--provider mock] [--data ./data]
+//   thethirdeye-spike [notes|scenes|audio|all] [--provider mock] [--data ./data]
 //                  [--out ./results.md] [--sizes 512,1024] [--limit N]
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { providerFromEnv, type ProviderName } from "@eyesmart/server/adapters";
+import { providerFromEnv, type ProviderName } from "@thethirdeye/server/adapters";
 import { getConfig, loadDotEnv } from "./client.js";
 import { runNotes } from "./notes.js";
 import { runScenes } from "./scenes.js";
@@ -72,9 +72,9 @@ function parseArgs(argv: string[]): Args {
 
 function usage(): string {
   return [
-    "eyesmart-spike - benchmark for a blind shopkeeper's assistant",
+    "thethirdeye-spike - benchmark for a blind shopkeeper's assistant",
     "",
-    "Usage: eyesmart-spike [notes|scenes|audio|all] [options]",
+    "Usage: thethirdeye-spike [notes|scenes|audio|all] [options]",
     "",
     "Options:",
     "  --provider NAME  notes triage provider: mock|meta|openrouter|openai|local",
@@ -111,7 +111,7 @@ async function main(): Promise<void> {
     return;
   }
   const startedAt = new Date();
-  console.log(`eyesmart-spike: notes provider=${args.provider}`);
+  console.log(`thethirdeye-spike: notes provider=${args.provider}`);
 
   const data = resolve(args.data);
   const want = (t: TestName) => args.test === "all" || args.test === t;

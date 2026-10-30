@@ -1,4 +1,4 @@
-// Shared record types for the eyesmart-spike benchmark.
+// Shared record types for the thethirdeye-spike benchmark.
 
 export interface TokenUsage {
   promptTokens: number;

@@ -1,4 +1,4 @@
-# eyesmart-spike (`apps/eval`)
+# thethirdeye-spike (`apps/eval`)
 
 Benchmark CLI for a blind shopkeeper's assistant. The **notes** test runs any
 server `VisionTriage` provider over `data/notes/<label>_*.jpg` and writes
@@ -48,3 +48,12 @@ Vision `POST {base}/chat/completions` (`muse-spark-1.3`),
 speech `POST {base}/asr/transcribe` (`muse-voice-transcribe-1.0`),
 `Authorization: Bearer`. Pricing: Spark standard $1.25/$4.25/$0.15 per 1M
 tokens, transcribe $0.18/hr (estimates; the API does not return cost).
+
+## Diagnosis
+
+Every OpenAI-compat triage call logs raw request/response to
+`debug/<file>_<size>.json` (override with `EVAL_DEBUG_DIR`; never contains
+the key): full content, `finish_reason`, raw `usage` (incl. reasoning
+tokens), and request params. Triage knobs: `TRIAGE_MAX_TOKENS` (default
+400), `META_REASONING_EFFORT` (`minimal`|`low`|`medium`|`high`|`xhigh`|
+`max`, default `minimal`, `off` omits it).
