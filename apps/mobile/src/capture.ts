@@ -1,0 +1,30 @@
+// Shared photo capture: full-res photo -> 768px JPEG q70 base64.
+// Used by the frame uploader and the enrollment screen.
+import { usePhotoOutput } from "react-native-vision-camera";
+import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
+
+export type PhotoOutput = ReturnType<typeof usePhotoOutput>;
+
+export interface SmallPhoto {
+  base64: string;
+  width: number;
+  height: number;
+}
+
+export async function captureSmall(photoOutput: PhotoOutput): Promise<SmallPhoto | null> {
+  try {
+    const file = await photoOutput.capturePhotoToFile(
+      { flashMode: "off", enableShutterSound: false },
+      {}
+    );
+    const small = await manipulateAsync(
+      `file://${file.filePath}`,
+      [{ resize: { width: 768 } }],
+      { compress: 0.7, format: SaveFormat.JPEG, base64: true }
+    );
+    if (!small.base64) return null;
+    return { base64: small.base64, width: small.width, height: small.height };
+  } catch {
+    return null;
+  }
+}

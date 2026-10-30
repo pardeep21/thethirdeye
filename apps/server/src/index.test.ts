@@ -65,8 +65,9 @@ function sendAudio(ws: WebSocket): void {
   ws.send(
     JSON.stringify({
       type: "audio",
-      pcm16Base64: Buffer.from("fake-pcm").toString("base64"),
-      sampleRate: 16000,
+      audioBase64: Buffer.from("fake-m4a").toString("base64"),
+      encoding: "m4a",
+      sampleRate: 44100,
       ts: Date.now(),
     })
   );
@@ -166,6 +167,30 @@ test("audio how-much command forces a fresh note read", async () => {
     }
   } finally {
     delete process.env.MOCK_STT_TEXT;
+    await t.done();
+  }
+});
+
+test("settings message switches the answer language", async () => {
+  const t = await startTestServer();
+  try {
+    const ws = await openClient(t.port);
+    try {
+      ws.send(JSON.stringify({ type: "settings", lang: "en" }));
+      // Small pause so the settings message is handled before the frame.
+      await new Promise((r) => setTimeout(r, 100));
+      sendFrame(ws);
+      const raw = await nextMessage(ws);
+      assert.deepEqual(JSON.parse(raw), {
+        type: "speak",
+        text: "500 rupee note",
+        lang: "en",
+        priority: "P1",
+      });
+    } finally {
+      ws.close();
+    }
+  } finally {
     await t.done();
   }
 });

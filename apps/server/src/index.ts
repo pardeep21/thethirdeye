@@ -9,6 +9,8 @@ import {
   isAudioMessage,
   isCommandMessage,
   isFrameMessage,
+  isSettingsMessage,
+  type SpeakLang,
   type SpeakMessage,
 } from "./protocol.js";
 import { LatestFrameStore } from "./store.js";
@@ -69,8 +71,9 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
   const embedder = opts?.embedder ?? new StubFaceEmbedder();
   const adapters = createAdapters(provider, { store: people });
   const frames = new LatestFrameStore();
-  // TODO(M6): language comes from the phone settings screen; pa until then.
-  const engine = new DecisionEngine((e) => renderProactive(e, "pa"));
+  // Answer language from the phone settings screen (default pa, single client).
+  let currentLang: SpeakLang = "pa";
+  const engine = new DecisionEngine((e) => renderProactive(e, currentLang));
   let lastPerception: { triage: TriageResult; faces: FaceHit[] } | null = null;
 
   async function handleEnroll(body: unknown): Promise<{ status: number; json: unknown }> {
@@ -194,7 +197,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           return;
         }
         engine.cancel();
-        engine.answer(await adapters.answer.describe(frame.jpeg, transcript), "pa");
+        engine.answer(await adapters.answer.describe(frame.jpeg, transcript), currentLang);
         return;
       }
       case "read": {
@@ -203,24 +206,24 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           return;
         }
         engine.cancel();
-        engine.answer(await adapters.answer.read(frame.jpeg), "pa");
+        engine.answer(await adapters.answer.read(frame.jpeg), currentLang);
         return;
       }
       case "find": {
         engine.cancel();
         const box = frame ? ((await adapters.finder.find(frame.jpeg, intent.noun))[0] ?? null) : null;
-        engine.answer(renderFind(intent.noun, box, "pa"), "pa");
+        engine.answer(renderFind(intent.noun, box, currentLang), currentLang);
         return;
       }
       case "who": {
         engine.cancel();
-        engine.answer(summarizePeople(whoParts(), "pa"), "pa");
+        engine.answer(summarizePeople(whoParts(), currentLang), currentLang);
         return;
       }
       case "howmuch": {
         engine.cancel();
         if (!frame) {
-          engine.answer(renderProactive({ kind: "NOTE_UNSURE" }, "pa").text, "pa");
+          engine.answer(renderProactive({ kind: "NOTE_UNSURE" }, currentLang).text, currentLang);
           return;
         }
         const fresh = await adapters.triage.triage(frame.jpeg);
@@ -229,12 +232,12 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           engine.answer(
             renderProactive(
               { kind: "NOTE_SEEN", denominations: [top.denomination], confidences: [top.confidence] },
-              "pa"
+              currentLang
             ).text,
-            "pa"
+            currentLang
           );
         } else {
-          engine.answer(renderProactive({ kind: "NOTE_UNSURE" }, "pa").text, "pa");
+          engine.answer(renderProactive({ kind: "NOTE_UNSURE" }, currentLang).text, currentLang);
         }
         return;
       }
@@ -266,7 +269,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     }
     if (isAudioMessage(msg)) {
       try {
-        const pcm = Buffer.from(msg.pcm16Base64, "base64");
+        const pcm = Buffer.from(msg.audioBase64, "base64");
         const transcript = await adapters.stt.transcribe(pcm);
         if (transcript.trim()) {
           console.log(`heard: ${transcript}`);
@@ -282,6 +285,10 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       if (msg.name === "mute") engine.setMuted(true);
       else if (msg.name === "unmute") engine.setMuted(false);
       else engine.cancel();
+      return [];
+    }
+    if (isSettingsMessage(msg)) {
+      currentLang = msg.lang;
       return [];
     }
     return [];

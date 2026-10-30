@@ -137,6 +137,33 @@
   `apps/server/src/faces/embed.ts` - plug the Snapbook pipeline there
   (MVP.md Q4); threshold 0.75 is a guess until measured.
 
+## M6 - Mobile settings, PTT, enrollment (done, typecheck-only)
+
+- Settings screen: server URL (reconnects), answer language pa/hi/en
+  (new `{type:"settings"}` WS message; server applies it to proactive and
+  command answers), mute toggle (mute/unmute commands). No nav library -
+  three screens switch on local state.
+- Volume-key push-to-talk (`ptt.ts`): every volume press toggles
+  expo-av recording (native volume UI hidden); on stop the m4a is read as
+  base64 and sent as an audio message. Protocol audio shape is now
+  `{audioBase64, encoding: "pcm16"|"m4a", sampleRate}` - Android cannot
+  record PCM, so real STT will need an m4a->wav step (mock ignores bytes).
+- Enrollment screen (helper): name, consent checkbox (required), 5 guided
+  photo captures with retake, submit to `POST /people`, enrolled list with
+  remove. Camera preview shows on this screen only. Shared `captureSmall`
+  (768px q70) and `http.ts` helpers; frame uploader refactored onto them.
+- How to run: `npm run typecheck -w @eyesmart/mobile`; device run needs
+  your Android SDK (`npx expo run:android`).
+- Tests: 76 pass total (config 2, mobile gate 6, server 68 incl. 2 new
+  settings tests). Mobile UI/PTT/enrollment are typecheck-only (no device).
+- Notes/limits: enrollment submits fine but the stub embedder answers 400
+  "no face found" until M5's Blocked item is resolved; PTT toggle (not
+  hold) semantics - first press records, second sends; answer language is
+  server-global (single-client assumption).
+- Next steps for you: on-device pass - hotspot URL, camera permission,
+  volume PTT, enrollment with real faces once an embedder exists, and the
+  TTS voice test from M3.
+
 ## Blocked
 
 - **M5 real face embeddings: @vladmandic/human 3.3.6 does not run here**

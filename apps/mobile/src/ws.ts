@@ -1,6 +1,6 @@
 // WebSocket client. Uses a minimal structural WebSocket type so it
 // typechecks with or without DOM lib (React Native provides WebSocket).
-import { isSpeakMessage, type SpeakMessage } from "../../server/src/protocol";
+import { isSpeakMessage, type SpeakLang, type SpeakMessage } from "../../server/src/protocol";
 
 type Timer = ReturnType<typeof setTimeout>;
 
@@ -91,8 +91,16 @@ export class EyeWs {
     this.sendJson({ type: "frame", jpegBase64, width, height, ts: Date.now() });
   }
 
-  sendAudio(pcm16Base64: string, sampleRate: number): void {
-    this.sendJson({ type: "audio", pcm16Base64, sampleRate, ts: Date.now() });
+  sendAudio(audioBase64: string, encoding: "pcm16" | "m4a", sampleRate: number): void {
+    this.sendJson({ type: "audio", audioBase64, encoding, sampleRate, ts: Date.now() });
+  }
+
+  sendCommand(name: "mute" | "unmute" | "cancel"): void {
+    this.sendJson({ type: "command", name });
+  }
+
+  sendSettings(lang: SpeakLang): void {
+    this.sendJson({ type: "settings", lang });
   }
 
   close(): void {

@@ -4,6 +4,7 @@ import {
   isAudioMessage,
   isCommandMessage,
   isFrameMessage,
+  isSettingsMessage,
   isSpeakMessage,
 } from "./protocol.js";
 
@@ -25,8 +26,21 @@ test("frame guard checks required fields", () => {
 });
 
 test("audio and command guards", () => {
-  assert.equal(isAudioMessage({ type: "audio", pcm16Base64: "eA==", sampleRate: 16000, ts: 1 }), true);
+  assert.equal(
+    isAudioMessage({ type: "audio", audioBase64: "eA==", encoding: "m4a", sampleRate: 44100, ts: 1 }),
+    true
+  );
+  assert.equal(
+    isAudioMessage({ type: "audio", audioBase64: "eA==", encoding: "wav", sampleRate: 44100, ts: 1 }),
+    false
+  );
   assert.equal(isAudioMessage({ type: "audio", sampleRate: 16000, ts: 1 }), false);
   assert.equal(isCommandMessage({ type: "command", name: "mute" }), true);
   assert.equal(isCommandMessage({ type: "command", name: "dance" }), false);
+});
+
+test("settings guard", () => {
+  assert.equal(isSettingsMessage({ type: "settings", lang: "hi" }), true);
+  assert.equal(isSettingsMessage({ type: "settings", lang: "fr" }), false);
+  assert.equal(isSettingsMessage({ type: "settings" }), false);
 });

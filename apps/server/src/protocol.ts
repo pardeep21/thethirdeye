@@ -24,10 +24,16 @@ export interface FrameMessage {
   ts: number;
 }
 
-/** Phone -> server: push-to-talk utterance (mono 16-bit PCM, base64). */
+/**
+ * Phone -> server: push-to-talk utterance (base64). Android's recorder
+ * cannot produce PCM, so the phone sends its native m4a/AAC file and the
+ * server transcribes from that (real STT needs an m4a->wav step; the mock
+ * ignores bytes).
+ */
 export interface AudioMessage {
   type: "audio";
-  pcm16Base64: string;
+  audioBase64: string;
+  encoding: "pcm16" | "m4a";
   sampleRate: number;
   ts: number;
 }
@@ -38,7 +44,13 @@ export interface CommandMessage {
   name: "mute" | "unmute" | "cancel";
 }
 
-export type UpMessage = FrameMessage | AudioMessage | CommandMessage;
+/** Phone -> server: settings that affect answers (from the settings screen). */
+export interface SettingsMessage {
+  type: "settings";
+  lang: SpeakLang;
+}
+
+export type UpMessage = FrameMessage | AudioMessage | CommandMessage | SettingsMessage;
 export type DownMessage = SpeakMessage;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -67,10 +79,16 @@ export function isFrameMessage(v: unknown): v is FrameMessage {
 export function isAudioMessage(v: unknown): v is AudioMessage {
   if (!isRecord(v) || v.type !== "audio") return false;
   return (
-    typeof v.pcm16Base64 === "string" &&
+    typeof v.audioBase64 === "string" &&
+    (v.encoding === "pcm16" || v.encoding === "m4a") &&
     typeof v.sampleRate === "number" &&
     typeof v.ts === "number"
   );
+}
+
+export function isSettingsMessage(v: unknown): v is SettingsMessage {
+  if (!isRecord(v) || v.type !== "settings") return false;
+  return v.lang === "pa" || v.lang === "hi" || v.lang === "en";
 }
 
 export function isCommandMessage(v: unknown): v is CommandMessage {

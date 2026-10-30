@@ -1,24 +1,31 @@
-// EyeSmart chest-camera app, M0 skeleton: hidden back camera, 32x32 change
-// gate throttled to ~2 fps, 768px JPEG q70 uploads over WS, Android TTS out.
+// EyeSmart chest-camera app: hidden back camera with a 32x32 change gate,
+// 768px JPEG q70 uploads over WS, Android TTS out, volume-key push-to-talk,
+// plus settings and face-enrollment screens for a sighted helper.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Button, StyleSheet, Text, View } from "react-native";
 import {
   Camera,
   useCameraDevice,
   useCameraPermission,
   usePhotoOutput,
 } from "react-native-vision-camera";
-import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 import { useKeepAwake } from "expo-keep-awake";
 import Constants from "expo-constants";
+import type { SpeakLang } from "../../server/src/protocol";
 import { createGate, shouldSendGate } from "./gate";
 import { useGateOutput } from "./camera";
 import { EyeWs } from "./ws";
 import { SpeakQueue } from "./speech";
+import { captureSmall } from "./capture";
+import { usePushToTalk } from "./ptt";
+import { SettingsScreen } from "./SettingsScreen";
+import { EnrollScreen } from "./EnrollScreen";
 import { DEFAULT_SERVER_URL } from "./config";
 
 /** Min ms between gate evaluations: the frame path runs faster than 2 fps. */
 const GATE_TICK_MS = 500;
+
+type Screen = "home" | "settings" | "enroll";
 
 export default function App() {
   useKeepAwake();
@@ -30,24 +37,35 @@ export default function App() {
   const uploadingRef = useRef(false);
   const saidNoNetworkRef = useRef(false);
   const wsRef = useRef<EyeWs | null>(null);
+  const langRef = useRef<SpeakLang>("pa");
   const queue = useMemo(() => new SpeakQueue(), []);
   const [connected, setConnected] = useState(false);
   const [framesSent, setFramesSent] = useState(0);
+  const [screen, setScreen] = useState<Screen>("home");
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
+  const [lang, setLang] = useState<SpeakLang>("pa");
+  const [muted, setMuted] = useState(false);
 
   useEffect(() => {
     if (!hasPermission) void requestPermission();
   }, [hasPermission, requestPermission]);
 
   useEffect(() => {
-    const ws = new EyeWs(DEFAULT_SERVER_URL, {
+    langRef.current = lang;
+  }, [lang]);
+
+  useEffect(() => {
+    const ws = new EyeWs(serverUrl, {
       onSpeak: (msg) => queue.enqueue(msg),
       onStatus: (ok) => {
         setConnected(ok);
-        if (!ok && !saidNoNetworkRef.current) {
+        if (ok) {
+          saidNoNetworkRef.current = false;
+          ws.sendSettings(langRef.current);
+        } else if (!saidNoNetworkRef.current) {
           saidNoNetworkRef.current = true;
           queue.enqueue({ type: "speak", text: "network nahi", lang: "pa", priority: "P1" });
         }
-        if (ok) saidNoNetworkRef.current = false;
       },
     });
     wsRef.current = ws;
@@ -57,28 +75,20 @@ export default function App() {
       wsRef.current = null;
       void queue.shutdown();
     };
-  }, [queue]);
+  }, [queue, serverUrl]);
+
+  const { pttState } = usePushToTalk(useCallback(() => wsRef.current, []));
 
   const uploadFrame = useCallback(async () => {
     const ws = wsRef.current;
     if (!ws || uploadingRef.current) return;
     uploadingRef.current = true;
     try {
-      const file = await photoOutput.capturePhotoToFile(
-        { flashMode: "off", enableShutterSound: false },
-        {}
-      );
-      const small = await manipulateAsync(
-        `file://${file.filePath}`,
-        [{ resize: { width: 768 } }],
-        { compress: 0.7, format: SaveFormat.JPEG, base64: true }
-      );
-      if (small.base64) {
+      const small = await captureSmall(photoOutput);
+      if (small) {
         ws.sendFrame(small.base64, small.width, small.height);
         setFramesSent((n) => n + 1);
       }
-    } catch {
-      // Drop failed captures; the gate will send again.
     } finally {
       uploadingRef.current = false;
     }
@@ -99,21 +109,64 @@ export default function App() {
   const outputs = useMemo(() => [photoOutput, frameOutput], [photoOutput, frameOutput]);
   const appName = Constants.expoConfig?.name ?? "EyeSmart";
 
+  const changeLang = useCallback((next: SpeakLang) => {
+    setLang(next);
+    wsRef.current?.sendSettings(next);
+  }, []);
+
+  const changeMuted = useCallback((next: boolean) => {
+    setMuted(next);
+    wsRef.current?.sendCommand(next ? "mute" : "unmute");
+  }, []);
+
+  const cameraVisible = device && hasPermission;
   return (
     <View style={styles.root}>
-      {device && hasPermission ? (
-        <Camera style={styles.hiddenCamera} device={device} outputs={outputs} isActive={true} />
+      {cameraVisible ? (
+        <Camera
+          style={screen === "enroll" ? styles.enrollCamera : styles.hiddenCamera}
+          device={device}
+          outputs={outputs}
+          isActive={true}
+        />
       ) : null}
-      <Text style={styles.title}>{appName}</Text>
-      <Text>camera: {device && hasPermission ? "on (hidden, ~2 fps)" : "waiting for permission"}</Text>
-      <Text>server: {connected ? "connected" : "disconnected"}</Text>
-      <Text>frames sent: {framesSent}</Text>
+      {screen === "settings" ? (
+        <SettingsScreen
+          initialUrl={serverUrl}
+          lang={lang}
+          muted={muted}
+          onSaveUrl={(url) => {
+            if (url) setServerUrl(url);
+          }}
+          onLang={changeLang}
+          onMuted={changeMuted}
+          onBack={() => setScreen("home")}
+        />
+      ) : screen === "enroll" ? (
+        <EnrollScreen photoOutput={photoOutput} serverUrl={serverUrl} onBack={() => setScreen("home")} />
+      ) : (
+        <View style={styles.home}>
+          <Text style={styles.title}>{appName}</Text>
+          <Text>camera: {cameraVisible ? "on (hidden, ~2 fps)" : "waiting for permission"}</Text>
+          <Text>server: {connected ? `connected (${serverUrl})` : "disconnected"}</Text>
+          <Text>frames sent: {framesSent}</Text>
+          <Text>push-to-talk: {pttState} (volume key toggles)</Text>
+          <Text>language: {lang} {muted ? "(muted)" : ""}</Text>
+          <View style={styles.buttons}>
+            <Button title="Settings" onPress={() => setScreen("settings")} />
+            <Button title="Enroll faces (helper)" onPress={() => setScreen("enroll")} />
+          </View>
+        </View>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, alignItems: "center", justifyContent: "center" },
+  root: { flex: 1 },
+  home: { flex: 1, alignItems: "center", justifyContent: "center" },
   hiddenCamera: { position: "absolute", width: 1, height: 1, opacity: 0 },
+  enrollCamera: { width: "100%", height: 240 },
   title: { fontSize: 20, fontWeight: "bold", marginBottom: 8 },
+  buttons: { marginTop: 16, gap: 8 },
 });
