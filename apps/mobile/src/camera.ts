@@ -12,8 +12,10 @@ export function useGateFrameProcessor(onGray: (gray: Uint8Array) => void) {
   const cbRef = useRef(onGray);
   cbRef.current = onGray;
   const plugin = useResizePlugin();
-  const runOnJSGray = useRunOnJS((gray: Uint8Array) => {
-    cbRef.current(gray);
+  // worklets-core runOnJS cannot marshal TypedArrays: cross the bridge with a
+  // plain number[] and convert back here.
+  const runOnJSGray = useRunOnJS((arr: number[]) => {
+    cbRef.current(Uint8Array.from(arr));
   }, []);
   return useFrameProcessor(
     (frame: Frame) => {
@@ -25,7 +27,7 @@ export function useGateFrameProcessor(onGray: (gray: Uint8Array) => void) {
           pixelFormat: "rgb",
           dataType: "uint8",
         });
-        const gray = new Uint8Array(GATE_SIZE * GATE_SIZE);
+        const gray: number[] = new Array(GATE_SIZE * GATE_SIZE);
         for (let i = 0; i < gray.length; i++) {
           const r = rgb[i * 3] ?? 0;
           const g = rgb[i * 3 + 1] ?? 0;

@@ -2,66 +2,59 @@
 // m4a file is read as base64 and sent over WS. The native volume UI is hidden
 // while mounted so presses don't change the volume.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Audio } from "expo-av";
+import { AudioModule, RecordingPresets, useAudioRecorder } from "expo-audio";
 import * as FileSystem from "expo-file-system";
 import { addVolumeListener, showNativeVolumeUI } from "react-native-volume-manager";
 import type { EyeWs } from "./ws";
 
 export type PttState = "idle" | "recording" | "sending";
 
-interface OngoingRecording {
-  stopAndUnloadAsync(): Promise<unknown>;
-  getURI(): string | null;
-}
-
 export function usePushToTalk(getWs: () => EyeWs | null): { pttState: PttState } {
   const [state, setState] = useState<PttState>("idle");
-  const recordingRef = useRef<OngoingRecording | null>(null);
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recordingRef = useRef(false);
   const busyRef = useRef(false);
   const getWsRef = useRef(getWs);
   getWsRef.current = getWs;
 
   const stopAndSend = useCallback(async () => {
-    const rec = recordingRef.current;
-    recordingRef.current = null;
-    if (!rec) {
+    if (!recordingRef.current) {
       setState("idle");
       return;
     }
+    recordingRef.current = false;
     setState("sending");
     try {
-      await rec.stopAndUnloadAsync();
-      const uri = rec.getURI();
+      await recorder.stop();
+      const uri = recorder.uri;
       const ws = getWsRef.current();
       if (uri && ws) {
         const base64 = await FileSystem.readAsStringAsync(uri, {
           encoding: FileSystem.EncodingType.Base64,
         });
-        const presetRate = Audio.RecordingOptionsPresets.HIGH_QUALITY.android?.sampleRate;
-        ws.sendAudio(base64, "m4a", presetRate ?? 44100);
+        ws.sendAudio(base64, "m4a", RecordingPresets.HIGH_QUALITY.sampleRate);
       }
     } catch {
       // Drop failed utterances; the user can press again.
     } finally {
       setState("idle");
     }
-  }, []);
+  }, [recorder]);
 
   const startRecording = useCallback(async () => {
     try {
-      const permission = await Audio.requestPermissionsAsync();
+      const permission = await AudioModule.requestRecordingPermissionsAsync();
       if (!permission.granted) return;
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const rec = new Audio.Recording();
-      await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      await rec.startAsync();
-      recordingRef.current = rec;
+      await AudioModule.setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      recordingRef.current = true;
       setState("recording");
     } catch {
-      recordingRef.current = null;
+      recordingRef.current = false;
       setState("idle");
     }
-  }, []);
+  }, [recorder]);
 
   const toggle = useCallback(async () => {
     if (busyRef.current) return;
@@ -82,11 +75,12 @@ export function usePushToTalk(getWs: () => EyeWs | null): { pttState: PttState }
     return () => {
       sub.remove();
       showNativeVolumeUI({ enabled: true });
-      const rec = recordingRef.current;
-      recordingRef.current = null;
-      if (rec) void rec.stopAndUnloadAsync().catch(() => undefined);
+      if (recordingRef.current) {
+        recordingRef.current = false;
+        void recorder.stop().catch(() => undefined);
+      }
     };
-  }, [toggle]);
+  }, [toggle, recorder]);
 
   return { pttState: state };
 }
