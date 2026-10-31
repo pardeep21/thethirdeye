@@ -9,7 +9,10 @@ import {
   isAudioMessage,
   isCommandMessage,
   isFrameMessage,
+  isHelloMessage,
+  isListeningMessage,
   isSettingsMessage,
+  isUtteranceMessage,
   type SpeakLang,
   type SpeakMessage,
 } from "./protocol.js";
@@ -285,6 +288,22 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       if (msg.name === "mute") engine.setMuted(true);
       else if (msg.name === "unmute") engine.setMuted(false);
       else engine.cancel();
+      return [];
+    }
+    // Protocol v2 (Track A): hello is acknowledged by staying silent;
+    // utterance is logged for the on-device acceptance check until prompt
+    // 02 wires the agent; listening start cancels queued P2/P3 per the v2
+    // contract (listening also clears the phone's own speak queue).
+    if (isHelloMessage(msg)) {
+      return [];
+    }
+    if (isUtteranceMessage(msg)) {
+      console.log(`heard: ${msg.text}`);
+      return [];
+    }
+    if (isListeningMessage(msg)) {
+      console.log(`listening: ${msg.state}`);
+      if (msg.state === "start") engine.cancel();
       return [];
     }
     if (isSettingsMessage(msg)) {

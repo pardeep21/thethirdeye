@@ -272,3 +272,41 @@ test("enrollment validates name and photos, reports faceless photos", async () =
     await stubbed.done();
   }
 });
+
+test("v2 hello/utterance/listening are accepted and logged (agent lands in 02)", async () => {
+  const t = await startTestServer();
+  try {
+    const ws = await openClient(t.port);
+    try {
+      const lines: string[] = [];
+      const origLog = console.log;
+      console.log = (...args: unknown[]) => {
+        lines.push(args.map(String).join(" "));
+      };
+      try {
+        ws.send(JSON.stringify({ type: "hello", appVersion: "0.1.0", device: "test" }));
+        ws.send(JSON.stringify({ type: "listening", state: "start" }));
+        ws.send(
+          JSON.stringify({ type: "utterance", text: "ki hai saamne", lang: "pa-IN", ts: Date.now() })
+        );
+        ws.send(JSON.stringify({ type: "listening", state: "stop" }));
+        await new Promise((r) => setTimeout(r, 200));
+      } finally {
+        console.log = origLog;
+      }
+      assert.ok(
+        lines.some((l) => l.includes("heard: ki hai saamne")),
+        `expected utterance in logs, got: ${lines.join(" | ")}`
+      );
+      assert.ok(
+        lines.some((l) => l.includes("listening: start")),
+        `expected listening start in logs, got: ${lines.join(" | ")}`
+      );
+      assert.equal(ws.readyState, WebSocket.OPEN);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});

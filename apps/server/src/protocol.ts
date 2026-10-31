@@ -13,6 +13,10 @@ export interface SpeakMessage {
   text: string;
   lang: SpeakLang;
   priority: Priority;
+  /** V2: server-assigned id for caption tracking (absent on older servers). */
+  id?: string;
+  /** V2: what kind of line this is (absent on older servers). */
+  kind?: SpeakKind;
 }
 
 /** Phone -> server: one gated camera frame (768px JPEG, base64). */
@@ -22,6 +26,12 @@ export interface FrameMessage {
   width: number;
   height: number;
   ts: number;
+  /** V2: which lens captured this frame. */
+  lens?: LensId;
+  /** V2: horizontal field of view in degrees (for clock positions). */
+  hfovDeg?: number;
+  /** V2: present when this frame answers a capture_now request. */
+  reqId?: string;
 }
 
 /**
@@ -50,11 +60,84 @@ export interface SettingsMessage {
   lang: SpeakLang;
 }
 
-export type UpMessage = FrameMessage | AudioMessage | CommandMessage | SettingsMessage;
-export type DownMessage = SpeakMessage;
+// --- Protocol v2 (DEV-PLAN.md section 3) ---
+
+/** Which camera lens captured a frame. */
+export type LensId = "main" | "ultrawide";
+
+/** What kind of line a speak message is. */
+export type SpeakKind = "cash" | "answer" | "people" | "scene" | "system";
+
+/** Short UI blips the phone can play (locally or on server request). */
+export type EarconName = "ack" | "thinking" | "error" | "saved";
+
+/** On-device speech-recognition locale tag. */
+export type UtteranceLang = "pa-IN" | "hi-IN" | "en-IN";
+
+/** Phone -> server: sent once on every (re)connect. */
+export interface HelloMessage {
+  type: "hello";
+  appVersion: string;
+  device: string;
+}
+
+/** Phone -> server: recognised push-to-talk text (on-device STT path). */
+export interface UtteranceMessage {
+  type: "utterance";
+  text: string;
+  lang: UtteranceLang;
+  confidence?: number;
+  ts: number;
+}
+
+/** Phone -> server: listening state. start => server cancels P2/P3. */
+export interface ListeningMessage {
+  type: "listening";
+  state: "start" | "stop";
+}
+
+/** Server -> phone: play a bundled earcon. */
+export interface EarconMessage {
+  type: "earcon";
+  name: EarconName;
+}
+
+/** Server -> phone: capture a frame now (the agent needs a fresh view). */
+export interface CaptureNowMessage {
+  type: "capture_now";
+  reqId: string;
+  lens?: LensId;
+}
+
+/** Server -> phone: mode/state snapshot for the home screen. */
+export interface StateMessage {
+  type: "state";
+  lookAround: boolean;
+  muted: boolean;
+  agentBusy: boolean;
+  lang: string;
+}
+
+export type UpMessage =
+  | FrameMessage
+  | AudioMessage
+  | CommandMessage
+  | SettingsMessage
+  | HelloMessage
+  | UtteranceMessage
+  | ListeningMessage;
+export type DownMessage = SpeakMessage | EarconMessage | CaptureNowMessage | StateMessage;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
+}
+
+function isOptString(v: unknown): boolean {
+  return v === undefined || typeof v === "string";
+}
+
+function isOptNumber(v: unknown): boolean {
+  return v === undefined || typeof v === "number";
 }
 
 export function isSpeakMessage(v: unknown): v is SpeakMessage {
@@ -62,7 +145,14 @@ export function isSpeakMessage(v: unknown): v is SpeakMessage {
   return (
     typeof v.text === "string" &&
     (v.lang === "pa" || v.lang === "hi" || v.lang === "en") &&
-    (v.priority === "P1" || v.priority === "P2" || v.priority === "P3")
+    (v.priority === "P1" || v.priority === "P2" || v.priority === "P3") &&
+    isOptString(v.id) &&
+    (v.kind === undefined ||
+      v.kind === "cash" ||
+      v.kind === "answer" ||
+      v.kind === "people" ||
+      v.kind === "scene" ||
+      v.kind === "system")
   );
 }
 
@@ -72,7 +162,10 @@ export function isFrameMessage(v: unknown): v is FrameMessage {
     typeof v.jpegBase64 === "string" &&
     typeof v.width === "number" &&
     typeof v.height === "number" &&
-    typeof v.ts === "number"
+    typeof v.ts === "number" &&
+    (v.lens === undefined || v.lens === "main" || v.lens === "ultrawide") &&
+    isOptNumber(v.hfovDeg) &&
+    isOptString(v.reqId)
   );
 }
 
@@ -94,6 +187,49 @@ export function isSettingsMessage(v: unknown): v is SettingsMessage {
 export function isCommandMessage(v: unknown): v is CommandMessage {
   if (!isRecord(v) || v.type !== "command") return false;
   return v.name === "mute" || v.name === "unmute" || v.name === "cancel";
+}
+
+export function isHelloMessage(v: unknown): v is HelloMessage {
+  if (!isRecord(v) || v.type !== "hello") return false;
+  return typeof v.appVersion === "string" && typeof v.device === "string";
+}
+
+export function isUtteranceMessage(v: unknown): v is UtteranceMessage {
+  if (!isRecord(v) || v.type !== "utterance") return false;
+  return (
+    typeof v.text === "string" &&
+    (v.lang === "pa-IN" || v.lang === "hi-IN" || v.lang === "en-IN") &&
+    isOptNumber(v.confidence) &&
+    typeof v.ts === "number"
+  );
+}
+
+export function isListeningMessage(v: unknown): v is ListeningMessage {
+  if (!isRecord(v) || v.type !== "listening") return false;
+  return v.state === "start" || v.state === "stop";
+}
+
+export function isEarconMessage(v: unknown): v is EarconMessage {
+  if (!isRecord(v) || v.type !== "earcon") return false;
+  return v.name === "ack" || v.name === "thinking" || v.name === "error" || v.name === "saved";
+}
+
+export function isCaptureNowMessage(v: unknown): v is CaptureNowMessage {
+  if (!isRecord(v) || v.type !== "capture_now") return false;
+  return (
+    typeof v.reqId === "string" &&
+    (v.lens === undefined || v.lens === "main" || v.lens === "ultrawide")
+  );
+}
+
+export function isStateMessage(v: unknown): v is StateMessage {
+  if (!isRecord(v) || v.type !== "state") return false;
+  return (
+    typeof v.lookAround === "boolean" &&
+    typeof v.muted === "boolean" &&
+    typeof v.agentBusy === "boolean" &&
+    typeof v.lang === "string"
+  );
 }
 
 // --- Perception results (MVP.md section 2, adapter layer) ---

@@ -28,7 +28,14 @@
           "cameraPermissionText": "TheThirdEye needs camera access to see notes and people."
         }
       ],
-      "expo-audio"
+      "expo-audio",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "TheThirdEye needs microphone access to hear your voice commands.",
+          "androidSpeechServicePackages": ["com.google.android.googlequicksearchbox"]
+        }
+      ]
     ]
   }
 }

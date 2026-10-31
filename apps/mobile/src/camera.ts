@@ -7,6 +7,17 @@ import { runAtTargetFps, useFrameProcessor, type Frame } from "react-native-visi
 import { useRunOnJS } from "react-native-worklets-core";
 import { useResizePlugin } from "vision-camera-resize-plugin";
 import { GATE_SIZE } from "./gate";
+import type { LensId } from "../../server/src/protocol";
+
+/**
+ * Horizontal field of view for frame uploads. The active camera format's
+ * fieldOfView when the caller selected an explicit format, else the
+ * per-lens fallback (main 66, ultrawide 100) until calibration (prompt 05).
+ */
+export function resolveHfov(lens: LensId, activeFieldOfView?: number): number {
+  if (typeof activeFieldOfView === "number" && activeFieldOfView > 0) return activeFieldOfView;
+  return lens === "ultrawide" ? 100 : 66;
+}
 
 export function useGateFrameProcessor(onGray: (gray: Uint8Array) => void) {
   const cbRef = useRef(onGray);

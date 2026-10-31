@@ -1,6 +1,18 @@
 // WebSocket client. Uses a minimal structural WebSocket type so it
 // typechecks with or without DOM lib (React Native provides WebSocket).
-import { isSpeakMessage, type SpeakLang, type SpeakMessage } from "../../server/src/protocol";
+import {
+  isCaptureNowMessage,
+  isEarconMessage,
+  isSpeakMessage,
+  isStateMessage,
+  type CaptureNowMessage,
+  type EarconMessage,
+  type LensId,
+  type SpeakLang,
+  type SpeakMessage,
+  type StateMessage,
+  type UtteranceLang,
+} from "../../server/src/protocol";
 
 type Timer = ReturnType<typeof setTimeout>;
 
@@ -27,7 +39,23 @@ function getWsCtor(): NativeWebSocketCtor {
 
 export interface WsEvents {
   onSpeak(msg: SpeakMessage): void;
+  onEarcon(msg: EarconMessage): void;
+  onCaptureNow(msg: CaptureNowMessage): void;
+  onState(msg: StateMessage): void;
   onStatus(connected: boolean): void;
+}
+
+export interface WsIdent {
+  appVersion: string;
+  device: string;
+}
+
+export interface FrameMeta {
+  width: number;
+  height: number;
+  lens: LensId;
+  hfovDeg: number;
+  reqId?: string;
 }
 
 export class EyeWs {
@@ -37,7 +65,8 @@ export class EyeWs {
 
   constructor(
     private readonly url: string,
-    private readonly events: WsEvents
+    private readonly events: WsEvents,
+    private readonly ident: WsIdent = { appVersion: "dev", device: "unknown" }
   ) {}
 
   connect(): void {
@@ -50,11 +79,17 @@ export class EyeWs {
     const Ctor = getWsCtor();
     const ws = new Ctor(this.url);
     this.ws = ws;
-    ws.onopen = () => this.events.onStatus(true);
+    ws.onopen = () => {
+      this.sendJson({ type: "hello", appVersion: this.ident.appVersion, device: this.ident.device });
+      this.events.onStatus(true);
+    };
     ws.onmessage = (ev) => {
       try {
         const msg: unknown = JSON.parse(String(ev.data));
         if (isSpeakMessage(msg)) this.events.onSpeak(msg);
+        else if (isEarconMessage(msg)) this.events.onEarcon(msg);
+        else if (isCaptureNowMessage(msg)) this.events.onCaptureNow(msg);
+        else if (isStateMessage(msg)) this.events.onState(msg);
       } catch {
         // Ignore malformed down-messages.
       }
@@ -87,12 +122,35 @@ export class EyeWs {
     }
   }
 
-  sendFrame(jpegBase64: string, width: number, height: number): void {
-    this.sendJson({ type: "frame", jpegBase64, width, height, ts: Date.now() });
+  sendFrame(jpegBase64: string, meta: FrameMeta): void {
+    this.sendJson({
+      type: "frame",
+      jpegBase64,
+      width: meta.width,
+      height: meta.height,
+      lens: meta.lens,
+      hfovDeg: meta.hfovDeg,
+      ...(meta.reqId !== undefined ? { reqId: meta.reqId } : {}),
+      ts: Date.now(),
+    });
   }
 
   sendAudio(audioBase64: string, encoding: "pcm16" | "m4a", sampleRate: number): void {
     this.sendJson({ type: "audio", audioBase64, encoding, sampleRate, ts: Date.now() });
+  }
+
+  sendUtterance(text: string, lang: UtteranceLang, confidence?: number): void {
+    this.sendJson({
+      type: "utterance",
+      text,
+      lang,
+      ...(confidence !== undefined ? { confidence } : {}),
+      ts: Date.now(),
+    });
+  }
+
+  sendListening(state: "start" | "stop"): void {
+    this.sendJson({ type: "listening", state });
   }
 
   sendCommand(name: "mute" | "unmute" | "cancel"): void {
