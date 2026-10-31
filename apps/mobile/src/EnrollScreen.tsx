@@ -2,11 +2,11 @@
 // enrolled-people list with remove. Photos go to POST /people (REST).
 import { useCallback, useEffect, useState } from "react";
 import { Button, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
-import { captureSmall, type PhotoOutput } from "./capture";
+import { captureSmall, type TakePhotoFn } from "./capture";
 import { httpJson, wsToHttp } from "./http";
 
 export interface EnrollProps {
-  photoOutput: PhotoOutput;
+  takePhoto: TakePhotoFn;
   serverUrl: string;
   onBack(): void;
 }
@@ -69,13 +69,13 @@ export function EnrollScreen(props: EnrollProps) {
     if (busy || photos.length >= 5) return;
     setBusy(true);
     try {
-      const small = await captureSmall(props.photoOutput);
+      const small = await captureSmall(props.takePhoto);
       if (small) setPhotos((p) => [...p, small.base64]);
       else setStatus("Photo failed, try again");
     } finally {
       setBusy(false);
     }
-  }, [busy, photos.length, props.photoOutput]);
+  }, [busy, photos.length, props.takePhoto]);
 
   const submit = useCallback(async () => {
     if (!base || busy) return;

@@ -3,9 +3,7 @@ import assert from "node:assert/strict";
 import {
   GATE_HEARTBEAT_MS,
   GATE_PIXELS,
-  GATE_SIZE,
   createGate,
-  downsampleGrayPlane,
   meanAbsDiff,
   shouldSendGate,
 } from "./gate.ts";
@@ -53,36 +51,4 @@ test("heartbeat sends after 5 s even with no change", () => {
 test("wrong-sized frame throws", () => {
   assert.throws(() => shouldSendGate(createGate(), new Uint8Array(10), 1000), /1024-byte/);
   assert.throws(() => meanAbsDiff(flat(0), new Uint8Array(10)), /1024-byte/);
-});
-
-test("downsample maps each output pixel to the nearest source pixel", () => {
-  // 64x64 plane where value = column index: out column x reads source column 2x.
-  const w = 64;
-  const h = 64;
-  const src = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) src[y * w + x] = x;
-  const out = downsampleGrayPlane(src, w, h, w);
-  assert.equal(out.length, GATE_PIXELS);
-  for (let y = 0; y < GATE_SIZE; y++)
-    for (let x = 0; x < GATE_SIZE; x++) assert.equal(out[y * GATE_SIZE + x], 2 * x);
-});
-
-test("downsample honors row stride padding", () => {
-  // 64-wide rows stored with stride 80; value = row index.
-  const w = 64;
-  const h = 64;
-  const stride = 80;
-  const src = new Uint8Array(stride * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) src[y * stride + x] = y;
-  const out = downsampleGrayPlane(src, w, h, stride);
-  assert.equal(out.length, GATE_PIXELS);
-  for (let y = 0; y < GATE_SIZE; y++)
-    for (let x = 0; x < GATE_SIZE; x++) assert.equal(out[y * GATE_SIZE + x], 2 * y);
-});
-
-test("downsample rejects bad plane geometry", () => {
-  const src = new Uint8Array(64 * 64);
-  assert.throws(() => downsampleGrayPlane(src, 64, 64, 32), /stride/);
-  assert.throws(() => downsampleGrayPlane(new Uint8Array(10), 64, 64, 64), /buffer/);
-  assert.throws(() => downsampleGrayPlane(src, 0, 64, 64), /dimensions/);
 });

@@ -7,13 +7,13 @@ import {
   Camera,
   useCameraDevice,
   useCameraPermission,
-  usePhotoOutput,
+  type PhotoFile,
 } from "react-native-vision-camera";
 import { useKeepAwake } from "expo-keep-awake";
 import Constants from "expo-constants";
 import type { SpeakLang } from "../../server/src/protocol";
 import { createGate, shouldSendGate } from "./gate";
-import { useGateOutput } from "./camera";
+import { useGateFrameProcessor } from "./camera";
 import { EyeWs } from "./ws";
 import { SpeakQueue } from "./speech";
 import { captureSmall } from "./capture";
@@ -31,20 +31,20 @@ export default function App() {
   useKeepAwake();
   const device = useCameraDevice("back");
   const { hasPermission, requestPermission } = useCameraPermission();
-  const photoOutput = usePhotoOutput();
+  const cameraRef = useRef<Camera>(null);
   const gateRef = useRef(createGate());
   const lastTickRef = useRef(0);
   const uploadingRef = useRef(false);
   const saidNoNetworkRef = useRef(false);
   const wsRef = useRef<EyeWs | null>(null);
   const langRef = useRef<SpeakLang>("pa");
-  const queue = useMemo(() => new SpeakQueue(), []);
   const [connected, setConnected] = useState(false);
   const [framesSent, setFramesSent] = useState(0);
   const [screen, setScreen] = useState<Screen>("home");
   const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
   const [lang, setLang] = useState<SpeakLang>("pa");
   const [muted, setMuted] = useState(false);
+  const queue = useMemo(() => new SpeakQueue(), []);
 
   useEffect(() => {
     if (!hasPermission) void requestPermission();
@@ -79,12 +79,20 @@ export default function App() {
 
   const { pttState } = usePushToTalk(useCallback(() => wsRef.current, []));
 
+  const takePhoto = useCallback(async (): Promise<PhotoFile | null> => {
+    try {
+      return (await cameraRef.current?.takePhoto({ flash: "off", enableShutterSound: false })) ?? null;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const uploadFrame = useCallback(async () => {
     const ws = wsRef.current;
     if (!ws || uploadingRef.current) return;
     uploadingRef.current = true;
     try {
-      const small = await captureSmall(photoOutput);
+      const small = await captureSmall(takePhoto);
       if (small) {
         ws.sendFrame(small.base64, small.width, small.height);
         setFramesSent((n) => n + 1);
@@ -92,7 +100,7 @@ export default function App() {
     } finally {
       uploadingRef.current = false;
     }
-  }, [photoOutput]);
+  }, [takePhoto]);
 
   const onGray = useCallback(
     (gray: Uint8Array) => {
@@ -105,8 +113,7 @@ export default function App() {
     [uploadFrame]
   );
 
-  const frameOutput = useGateOutput(onGray);
-  const outputs = useMemo(() => [photoOutput, frameOutput], [photoOutput, frameOutput]);
+  const frameProcessor = useGateFrameProcessor(onGray);
   const appName = Constants.expoConfig?.name ?? "TheThirdEye";
 
   const changeLang = useCallback((next: SpeakLang) => {
@@ -119,14 +126,17 @@ export default function App() {
     wsRef.current?.sendCommand(next ? "mute" : "unmute");
   }, []);
 
-  const cameraVisible = device && hasPermission;
+  const cameraVisible = device != null && hasPermission;
   return (
     <View style={styles.root}>
-      {cameraVisible ? (
+      {device != null && hasPermission ? (
         <Camera
+          ref={cameraRef}
           style={screen === "enroll" ? styles.enrollCamera : styles.hiddenCamera}
           device={device}
-          outputs={outputs}
+          photo={true}
+          pixelFormat="yuv"
+          frameProcessor={frameProcessor}
           isActive={true}
         />
       ) : null}
@@ -143,7 +153,7 @@ export default function App() {
           onBack={() => setScreen("home")}
         />
       ) : screen === "enroll" ? (
-        <EnrollScreen photoOutput={photoOutput} serverUrl={serverUrl} onBack={() => setScreen("home")} />
+        <EnrollScreen takePhoto={takePhoto} serverUrl={serverUrl} onBack={() => setScreen("home")} />
       ) : (
         <View style={styles.home}>
           <Text style={styles.title}>{appName}</Text>
