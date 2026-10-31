@@ -27,7 +27,7 @@ export const TRIAGE_SYSTEM_PROMPT = [
   "You are a vision module for a blind shopkeeper's assistant.",
   "Look at the image and return ONLY a JSON object with this exact shape, no other text:",
   '{"notes":[{"denomination":10|20|50|100|200|500|null,"confidence":0-1}],"people":[{"position":"left"|"centre"|"right","distance":"near"|"far","gender":"man"|"woman"|null,"age_range":"<like 20s or 60+ or null>","action":"<short, e.g. handing a note, or null>"}]}',
-  "Rules: Indian rupee notes only; use null denomination when a note-like object is unclear (never guess the value); confidence is your certainty 0..1; omit people you cannot see; never name anyone.",
+  "Rules: Indian rupee notes only, both old Mahatma Gandhi series and new series; use null denomination with confidence below 0.6 when a note-like object is unclear (never guess the value); confidence is your certainty 0..1; omit people you cannot see; never name anyone.",
 ].join(" ");
 
 const DENOMS: Denomination[] = [10, 20, 50, 100, 200, 500];

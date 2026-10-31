@@ -6,6 +6,9 @@
 // Usage:
 //   thethirdeye-spike [notes|scenes|audio|all] [--provider mock] [--data ./data]
 //                  [--out ./results.md] [--sizes 512,1024] [--limit N]
+//
+// Every run also writes results/<timestamp>.json (accuracy, unsure rate,
+// latency, all calls).
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -14,7 +17,14 @@ import { getConfig, loadDotEnv } from "./client.js";
 import { runNotes } from "./notes.js";
 import { runScenes } from "./scenes.js";
 import { runAudio } from "./audio.js";
-import { buildMarkdown, writeResultsMd } from "./report.js";
+import {
+  buildMarkdown,
+  buildResultsJson,
+  resultsJsonName,
+  summarizeNotes,
+  writeResultsJson,
+  writeResultsMd,
+} from "./report.js";
 import type { TestName } from "./types.js";
 
 const PROVIDERS: ProviderName[] = ["mock", "meta", "openrouter", "openai", "local"];
@@ -88,6 +98,7 @@ function usage(): string {
     "Notes labels: leading digits of data/notes/<label>_*.jpg (10_1.jpg, 500_new_front_03.jpg).",
     "Keys per provider: META_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY (see ../server/.env.example).",
     "Scenes/audio still use the direct Meta client (META_API_KEY required).",
+    "Every run also writes results/<timestamp>.json next to the working directory.",
   ].join("\n");
 }
 
@@ -101,6 +112,10 @@ function listFiles(dir: string, exts: string[]): string[] {
     .map((f) => join(dir, f))
     .filter((f) => statSync(f).isFile())
     .sort();
+}
+
+function pct(part: number, whole: number): string {
+  return whole ? `${((100 * part) / whole).toFixed(1)}%` : "n/a";
 }
 
 async function main(): Promise<void> {
@@ -153,10 +168,20 @@ async function main(): Promise<void> {
   const outPath = resolve(args.out);
   writeResultsMd(outPath, markdown);
 
-  const scored = notes.filter((c) => !c.error && c.expected !== null);
-  const correct = scored.filter((c) => c.predicted === c.expected).length;
+  const summary = summarizeNotes(notes);
+  const jsonPath = resolve("results", resultsJsonName(startedAt));
+  writeResultsJson(jsonPath, buildResultsJson({ runInfo, sizes: args.sizes, notes, scenes, audios, startedAt, provider: args.provider }));
+
   const spend = [...notes, ...scenes, ...audios].reduce((s, c) => s + (c.costUsd ?? 0), 0);
-  console.log(`\nDone: notes ${correct}/${scored.length} correct, report -> ${outPath}`);
+  const o = summary.overall;
+  console.log(`\nDone: notes ${o.correct}/${o.n} correct (${pct(o.correct, o.n)}), unsure ${o.unsure}/${o.n} (${pct(o.unsure, o.n)}), report -> ${outPath}`);
+  for (const d of summary.perDenomination) {
+    if (!d.n) continue;
+    console.log(`  ${d.denomination}: ${d.correct}/${d.n} correct (${pct(d.correct, d.n)}), unsure ${d.unsure}/${d.n} (${pct(d.unsure, d.n)})`);
+  }
+  const lat = summary.latencyMs;
+  console.log(`Latency (notes ok calls, n=${lat.n}): p50=${lat.p50 ?? "n/a"}ms p95=${lat.p95 ?? "n/a"}ms`);
+  console.log(`Report JSON -> ${jsonPath}`);
   console.log(`Estimated spend: $${spend.toFixed(spend >= 1 ? 4 : 6)}`);
 }
 

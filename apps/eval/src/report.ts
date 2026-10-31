@@ -1,7 +1,9 @@
 // results.md generation: accuracy per denomination, confusion list,
 // p50/p95 latency per test and image size, transcripts, total spend.
+// Also builds the machine-readable results/<timestamp>.json report.
 
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { formatUsd } from "./client.js";
 import { DENOMINATIONS } from "./notes.js";
 import type { AudioCall, CallRecord, NoteCall, SceneCall } from "./types.js";
@@ -17,16 +19,94 @@ function fmtMs(v: number | null): string {
   return v === null ? "n/a" : `${Math.round(v)}ms`;
 }
 
-function latencyTable(title: string, groups: Map<string, CallRecord[]>): string {
-  const lines = [`### ${title}`, "", "| Test | Image size | n (ok/total) | p50 | p95 |", "|---|---|---|---|---|"];
-  for (const [key, calls] of groups) {
+function fmtPct(ok: number, n: number): string {
+  return n ? `${((100 * ok) / n).toFixed(1)}%` : "n/a";
+}
+
+export interface LatencyGroup {
+  test: string;
+  imageSize: string;
+  n: number;
+  ok: number;
+  p50: number | null;
+  p95: number | null;
+}
+
+/** Successful-call latency per (test, image size) group. */
+export function latencyGroups(all: CallRecord[]): LatencyGroup[] {
+  const groups = new Map<string, CallRecord[]>();
+  for (const c of all) {
+    const key = `${c.test}\u0000${c.imageSize}`;
+    const arr = groups.get(key) ?? [];
+    arr.push(c);
+    groups.set(key, arr);
+  }
+  return [...groups].map(([key, calls]) => {
     const ok = calls.filter((c) => !c.error).map((c) => c.latencyMs);
-    const [test, size] = key.split("\u0000");
-    lines.push(
-      `| ${test} | ${size} | ${ok.length}/${calls.length} | ${fmtMs(percentile(ok, 50))} | ${fmtMs(percentile(ok, 95))} |`
-    );
+    const [test, imageSize] = key.split("\u0000");
+    return { test, imageSize, n: calls.length, ok: ok.length, p50: percentile(ok, 50), p95: percentile(ok, 95) };
+  });
+}
+
+function latencyTable(title: string, all: CallRecord[]): string {
+  const lines = [`### ${title}`, "", "| Test | Image size | n (ok/total) | p50 | p95 |", "|---|---|---|---|---|"];
+  for (const g of latencyGroups(all)) {
+    lines.push(`| ${g.test} | ${g.imageSize} | ${g.ok}/${g.n} | ${fmtMs(g.p50)} | ${fmtMs(g.p95)} |`);
   }
   return lines.join("\n");
+}
+
+export interface DenomSummary {
+  denomination: number;
+  n: number;
+  correct: number;
+  accuracy: number | null;
+  /** Predicted null (model said unsure) among scored calls. */
+  unsure: number;
+  unsureRate: number | null;
+}
+
+export interface NotesSummary {
+  perDenomination: DenomSummary[];
+  overall: { n: number; correct: number; accuracy: number | null; unsure: number; unsureRate: number | null };
+  /** Successful-call latency over all scored notes calls. */
+  latencyMs: { n: number; p50: number | null; p95: number | null };
+}
+
+function rate(ok: number, n: number): number | null {
+  return n ? ok / n : null;
+}
+
+/** Accuracy + unsure rate per denomination and overall, across sizes. Errors and unscored files excluded. */
+export function summarizeNotes(notes: NoteCall[]): NotesSummary {
+  const scored = notes.filter((c) => !c.error && c.expected !== null);
+  const perDenomination = DENOMINATIONS.map((d) => {
+    const group = scored.filter((c) => c.expected === d);
+    const correct = group.filter((c) => c.predicted === c.expected).length;
+    const unsure = group.filter((c) => c.predicted === null).length;
+    return {
+      denomination: d,
+      n: group.length,
+      correct,
+      accuracy: rate(correct, group.length),
+      unsure,
+      unsureRate: rate(unsure, group.length),
+    };
+  });
+  const correct = scored.filter((c) => c.predicted === c.expected).length;
+  const unsure = scored.filter((c) => c.predicted === null).length;
+  const lat = scored.map((c) => c.latencyMs);
+  return {
+    perDenomination,
+    overall: {
+      n: scored.length,
+      correct,
+      accuracy: rate(correct, scored.length),
+      unsure,
+      unsureRate: rate(unsure, scored.length),
+    },
+    latencyMs: { n: lat.length, p50: percentile(lat, 50), p95: percentile(lat, 95) },
+  };
 }
 
 export interface ReportInput {
@@ -70,26 +150,28 @@ export function buildMarkdown(input: ReportInput): string {
   if (!notes.length) {
     out.push("(notes test not run)", "");
   } else {
-    out.push("| Denomination | Size | n | Correct | Accuracy |");
-    out.push("|---|---|---|---|---|");
+    out.push("| Denomination | Size | n | Correct | Accuracy | Unsure |");
+    out.push("|---|---|---|---|---|---|");
     const scored = notes.filter((c) => !c.error && c.expected !== null);
-    const sizeTotals = new Map<string, { n: number; ok: number }>();
+    const sizeTotals = new Map<string, { n: number; ok: number; unsure: number }>();
     for (const d of DENOMINATIONS) {
       for (const size of sizes.map(String).map((s) => `${s}px`)) {
         const group = scored.filter((c) => c.expected === d && c.imageSize === size);
         const ok = group.filter((c) => c.predicted === c.expected).length;
-        const acc = sizeTotals.get(size) ?? { n: 0, ok: 0 };
+        const unsure = group.filter((c) => c.predicted === null).length;
+        const acc = sizeTotals.get(size) ?? { n: 0, ok: 0, unsure: 0 };
         acc.n += group.length;
         acc.ok += ok;
+        acc.unsure += unsure;
         sizeTotals.set(size, acc);
         out.push(
-          `| ${d} | ${size} | ${group.length} | ${ok} | ${group.length ? `${((100 * ok) / group.length).toFixed(1)}%` : "n/a"} |`
+          `| ${d} | ${size} | ${group.length} | ${ok} | ${fmtPct(ok, group.length)} | ${unsure} (${fmtPct(unsure, group.length)}) |`
         );
       }
     }
     for (const [size, t] of sizeTotals) {
       out.push(
-        `| **overall** | **${size}** | **${t.n}** | **${t.ok}** | **${t.n ? `${((100 * t.ok) / t.n).toFixed(1)}%` : "n/a"}** |`
+        `| **overall** | **${size}** | **${t.n}** | **${t.ok}** | **${fmtPct(t.ok, t.n)}** | **${t.unsure} (${fmtPct(t.unsure, t.n)})** |`
       );
     }
     out.push("");
@@ -126,14 +208,7 @@ export function buildMarkdown(input: ReportInput): string {
   if (!all.length) {
     out.push("(no calls)", "");
   } else {
-    const groups = new Map<string, CallRecord[]>();
-    for (const c of all) {
-      const key = `${c.test}\u0000${c.imageSize}`;
-      const arr = groups.get(key) ?? [];
-      arr.push(c);
-      groups.set(key, arr);
-    }
-    out.push(latencyTable("All groups", groups), "");
+    out.push(latencyTable("All groups", all), "");
   }
 
   // Scenes.
@@ -191,4 +266,35 @@ export function buildMarkdown(input: ReportInput): string {
 
 export function writeResultsMd(path: string, markdown: string): void {
   writeFileSync(path, markdown, "utf8");
+}
+
+/** Machine-readable twin of the markdown report. */
+export function buildResultsJson(input: ReportInput & { provider: string }): string {
+  const { runInfo, sizes, notes, scenes, audios, startedAt, provider } = input;
+  const all: CallRecord[] = [...notes, ...scenes, ...audios];
+  const doc = {
+    generatedAt: startedAt.toISOString(),
+    provider,
+    sizes,
+    runInfo,
+    notesSummary: summarizeNotes(notes),
+    latencyByGroup: latencyGroups(all),
+    spendUsd: {
+      total: all.reduce((s, c) => s + (c.costUsd ?? 0), 0),
+      vision: [...notes, ...scenes].reduce((s, c) => s + (c.costUsd ?? 0), 0),
+      audio: audios.reduce((s, c) => s + (c.costUsd ?? 0), 0),
+    },
+    calls: { notes, scenes, audios },
+  };
+  return JSON.stringify(doc, null, 2);
+}
+
+/** Windows-safe results filename: 2026-10-31T04-12-33-123Z.json (no colons). */
+export function resultsJsonName(at: Date): string {
+  return `${at.toISOString().replace(/[:.]/g, "-")}.json`;
+}
+
+export function writeResultsJson(path: string, json: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, json, "utf8");
 }
