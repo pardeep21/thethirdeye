@@ -312,7 +312,7 @@ export class OpenAICompatTriage implements NamedTriage {
   }
 }
 
-function isJsonModeError(err: unknown): boolean {
+export function isJsonModeError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return /response_format|json_object|json mode/i.test(msg);
 }

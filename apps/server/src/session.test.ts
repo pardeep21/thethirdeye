@@ -1,0 +1,87 @@
+// Session, scene-state and latency-stats tests: history trimming,
+// perception mapping, and p50/p95 over the rolling window.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { HISTORY_MAX_TURNS, Session, sceneFromPerception } from "./session.js";
+import { UtteranceStats } from "./stats.js";
+
+test("history keeps the last 10 turns", () => {
+  const s = new Session();
+  for (let i = 0; i < 14; i++) {
+    s.pushTurn({ role: i % 2 === 0 ? "user" : "assistant", text: `t${i}` });
+  }
+  assert.equal(s.history.length, HISTORY_MAX_TURNS);
+  assert.equal(s.history[0]?.text, "t4");
+  assert.equal(s.history[9]?.text, "t13");
+});
+
+test("session defaults: pa, gurmukhi, idle", () => {
+  const s = new Session();
+  assert.equal(s.lang, "pa");
+  assert.equal(s.script, "gurmukhi");
+  assert.equal(s.lookAround, false);
+  assert.equal(s.muted, false);
+  assert.equal(s.agentBusy, false);
+  assert.equal(s.lastFrame, null);
+  assert.deepEqual(s.sceneState, { people: [], recentNotes: [], lookAround: false });
+});
+
+test("sceneFromPerception maps people, clocks and known names", () => {
+  const scene = sceneFromPerception(
+    {
+      notes: [{ denomination: 500, confidence: 0.9 }],
+      people: [
+        { position: "left", distance: "near", gender: "man", age_range: "30s" },
+        { position: "right", distance: "far" },
+      ],
+    },
+    [
+      { personId: "1", name: "Ravi", score: 0.9 },
+      { personId: null, name: null, score: 0.1 },
+    ],
+    false
+  );
+  assert.equal(scene.people.length, 2);
+  assert.deepEqual(scene.people[0], {
+    ref: "P1",
+    clock: 10,
+    distance: "near",
+    desc: "man around 30s",
+    knownName: "Ravi",
+  });
+  assert.deepEqual(scene.people[1], { ref: "P2", clock: 2, distance: "far", desc: "person" });
+  assert.deepEqual(scene.recentNotes, ["500 (conf 0.9)"]);
+  assert.equal(scene.lookAround, false);
+});
+
+test("sceneFromPerception stays silent-safe on empty input", () => {
+  const scene = sceneFromPerception({ notes: [], people: [] }, [], true);
+  assert.deepEqual(scene, { people: [], recentNotes: [], lookAround: true });
+});
+
+test("stats snapshot percentiles over samples", () => {
+  const st = new UtteranceStats();
+  assert.deepEqual(st.snapshot(), {
+    utterances: 0,
+    frameWaitMs: { p50: 0, p95: 0 },
+    modelMs: { p50: 0, p95: 0 },
+    totalMs: { p50: 0, p95: 0 },
+  });
+  for (let i = 1; i <= 10; i++) {
+    st.record({ frameWaitMs: i * 10, modelMs: i * 100, totalMs: i * 1000 });
+  }
+  const snap = st.snapshot();
+  assert.equal(snap.utterances, 10);
+  assert.deepEqual(snap.frameWaitMs, { p50: 50, p95: 100 });
+  assert.deepEqual(snap.modelMs, { p50: 500, p95: 1000 });
+  assert.deepEqual(snap.totalMs, { p50: 5000, p95: 10000 });
+});
+
+test("stats keep only the last 50 samples", () => {
+  const st = new UtteranceStats();
+  for (let i = 1; i <= 60; i++) {
+    st.record({ frameWaitMs: i, modelMs: i, totalMs: i });
+  }
+  assert.equal(st.count, 50);
+  assert.equal(st.snapshot().totalMs.p50, 35);
+});

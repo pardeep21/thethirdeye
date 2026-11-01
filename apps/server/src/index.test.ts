@@ -1,9 +1,12 @@
 // Integration: frame in over WS -> mock triage -> speak out;
-// audio in -> mock STT -> intent -> answer out; REST people enrollment.
+// audio in -> mock STT -> intent -> answer out; utterance in -> fast path
+// or mock agent (capture_now round trip) -> speak out; REST enrollment.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WebSocket } from "ws";
 import { startServer } from "./index.js";
+import { MockAgentBrain } from "./adapters/agent.js";
+import type { AgentBrain } from "./adapters/agent.js";
 import { PeopleStore } from "./faces/store.js";
 import type { FaceEmbedder } from "./faces/embed.js";
 
@@ -14,13 +17,13 @@ class FixedEmbedder implements FaceEmbedder {
   }
 }
 
-async function startTestServer(embedder?: FaceEmbedder): Promise<{
+async function startTestServer(embedder?: FaceEmbedder, agent?: AgentBrain): Promise<{
   port: number;
   done: () => Promise<void>;
 }> {
   process.env.PROVIDER = "mock";
   const store = new PeopleStore(":memory:");
-  const server = await startServer(0, { store, embedder });
+  const server = await startServer(0, { store, embedder, agent });
   return {
     port: server.port,
     done: async () => {
@@ -40,6 +43,39 @@ function nextMessage(ws: WebSocket): Promise<string> {
   });
 }
 
+/**
+ * Collect parsed messages until pred matches one, or the timeout hits.
+ * Uses one persistent listener: messages that arrive in the same TCP
+ * chunk are emitted synchronously, so a one-shot listener per message
+ * would drop all but the first.
+ */
+async function collectUntil(
+  ws: WebSocket,
+  pred: (m: Record<string, unknown>) => boolean,
+  timeoutMs: number
+): Promise<Array<Record<string, unknown>>> {
+  const got: Array<Record<string, unknown>> = [];
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, timeoutMs);
+    function done(): void {
+      clearTimeout(timer);
+      ws.off("message", onMsg);
+      resolve(got);
+    }
+    function onMsg(data: unknown): void {
+      const m = JSON.parse(String(data)) as Record<string, unknown>;
+      got.push(m);
+      if (pred(m)) done();
+    }
+    ws.on("message", onMsg);
+  });
+}
+
+/** Collect every message that arrives within timeoutMs. */
+async function collectFor(ws: WebSocket, timeoutMs: number): Promise<Array<Record<string, unknown>>> {
+  return collectUntil(ws, () => false, timeoutMs);
+}
+
 async function openClient(port: number): Promise<WebSocket> {
   const ws = new WebSocket(`ws://127.0.0.1:${port}`);
   await new Promise<void>((resolve, reject) => {
@@ -49,7 +85,7 @@ async function openClient(port: number): Promise<WebSocket> {
   return ws;
 }
 
-function sendFrame(ws: WebSocket): void {
+function sendFrame(ws: WebSocket, extra: Record<string, unknown> = {}): void {
   ws.send(
     JSON.stringify({
       type: "frame",
@@ -57,6 +93,7 @@ function sendFrame(ws: WebSocket): void {
       width: 4,
       height: 4,
       ts: Date.now(),
+      ...extra,
     })
   );
 }
@@ -73,6 +110,10 @@ function sendAudio(ws: WebSocket): void {
   );
 }
 
+function sendUtterance(ws: WebSocket, text: string): void {
+  ws.send(JSON.stringify({ type: "utterance", text, lang: "pa-IN", ts: Date.now() }));
+}
+
 test("frame over WS yields a speak message (mock provider)", async () => {
   const t = await startTestServer();
   try {
@@ -86,9 +127,11 @@ test("frame over WS yields a speak message (mock provider)", async () => {
       const raw = await nextMessage(ws);
       assert.deepEqual(JSON.parse(raw), {
         type: "speak",
+        id: "spk-1",
         text: "ਪੰਜ ਸੌ ਦਾ ਨੋਟ",
         lang: "pa",
         priority: "P1",
+        kind: "cash",
       });
     } finally {
       ws.close();
@@ -110,9 +153,11 @@ test("audio describe command yields the mock answer", async () => {
       const raw = await nextMessage(ws);
       assert.deepEqual(JSON.parse(raw), {
         type: "speak",
+        id: "spk-2",
         text: "Mock counter: two packets, a phone, one bag left side.",
         lang: "pa",
         priority: "P1",
+        kind: "answer",
       });
     } finally {
       ws.close();
@@ -133,9 +178,11 @@ test("audio who command with no perception yet says Koi nahi", async () => {
       const raw = await nextMessage(ws);
       assert.deepEqual(JSON.parse(raw), {
         type: "speak",
+        id: "spk-1",
         text: "Koi nahi",
         lang: "pa",
         priority: "P1",
+        kind: "answer",
       });
     } finally {
       ws.close();
@@ -158,9 +205,11 @@ test("audio how-much command forces a fresh note read", async () => {
       const raw = await nextMessage(ws);
       assert.deepEqual(JSON.parse(raw), {
         type: "speak",
+        id: "spk-2",
         text: "ਪੰਜ ਸੌ ਦਾ ਨੋਟ",
         lang: "pa",
         priority: "P1",
+        kind: "answer",
       });
     } finally {
       ws.close();
@@ -183,9 +232,11 @@ test("settings message switches the answer language", async () => {
       const raw = await nextMessage(ws);
       assert.deepEqual(JSON.parse(raw), {
         type: "speak",
+        id: "spk-1",
         text: "500 rupee note",
         lang: "en",
         priority: "P1",
+        kind: "cash",
       });
     } finally {
       ws.close();
@@ -273,7 +324,7 @@ test("enrollment validates name and photos, reports faceless photos", async () =
   }
 });
 
-test("v2 hello/utterance/listening are accepted and logged (agent lands in 02)", async () => {
+test("v2 hello/listening are accepted and logged", async () => {
   const t = await startTestServer();
   try {
     const ws = await openClient(t.port);
@@ -286,18 +337,11 @@ test("v2 hello/utterance/listening are accepted and logged (agent lands in 02)",
       try {
         ws.send(JSON.stringify({ type: "hello", appVersion: "0.1.0", device: "test" }));
         ws.send(JSON.stringify({ type: "listening", state: "start" }));
-        ws.send(
-          JSON.stringify({ type: "utterance", text: "ki hai saamne", lang: "pa-IN", ts: Date.now() })
-        );
         ws.send(JSON.stringify({ type: "listening", state: "stop" }));
         await new Promise((r) => setTimeout(r, 200));
       } finally {
         console.log = origLog;
       }
-      assert.ok(
-        lines.some((l) => l.includes("heard: ki hai saamne")),
-        `expected utterance in logs, got: ${lines.join(" | ")}`
-      );
       assert.ok(
         lines.some((l) => l.includes("listening: start")),
         `expected listening start in logs, got: ${lines.join(" | ")}`
@@ -307,6 +351,205 @@ test("v2 hello/utterance/listening are accepted and logged (agent lands in 02)",
       ws.close();
     }
   } finally {
+    await t.done();
+  }
+});
+
+test("utterance fast path: mute mutes without any capture_now", async () => {
+  const t = await startTestServer();
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "chup");
+      const got = await collectFor(ws, 300);
+      assert.ok(
+        got.some((m) => m.type === "state" && m.muted === true),
+        `expected muted state, got: ${JSON.stringify(got)}`
+      );
+      assert.ok(
+        got.every((m) => m.type !== "capture_now"),
+        "fast path must not request a frame"
+      );
+      assert.ok(
+        got.every((m) => m.type !== "speak"),
+        "mute stays silent"
+      );
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("utterance fast path: howmuch reuses the fresh note read", async () => {
+  const t = await startTestServer();
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendFrame(ws);
+      await nextMessage(ws); // proactive note speak first
+      sendUtterance(ws, "eh kinne da");
+      const got = await collectFor(ws, 300);
+      const speak = got.find((m) => m.type === "speak");
+      assert.deepEqual(speak, {
+        type: "speak",
+        id: "spk-2",
+        text: "ਪੰਜ ਸੌ ਦਾ ਨੋਟ",
+        lang: "pa",
+        priority: "P1",
+        kind: "answer",
+      });
+      assert.ok(got.every((m) => m.type !== "capture_now"), "fast path must not request a frame");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("utterance agent path: capture_now -> frame -> mock agent -> rendered clock speak", async () => {
+  const agent = new MockAgentBrain();
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "ki hai saamne");
+      const early = await collectUntil(ws, (m) => m.type === "capture_now", 2000);
+      const capture = early.find((m) => m.type === "capture_now") as { reqId: string } | undefined;
+      assert.ok(capture?.reqId, `expected capture_now, got: ${JSON.stringify(early)}`);
+      assert.ok(early.some((m) => m.type === "earcon" && m.name === "thinking"), "thinking earcon sent");
+      assert.ok(early.some((m) => m.type === "state" && m.agentBusy === true), "busy state pushed");
+
+      // The capture reply also feeds the proactive engine (cash stays first).
+      // The idle state is the last message of the agent turn: wait for it so
+      // nothing in the same chunk is missed between collections.
+      sendFrame(ws, { reqId: capture.reqId, lens: "main", hfovDeg: 100 });
+      const late = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 2000);
+      const answer = late.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(answer?.text, "Mock saamne: counter te samaan 12 o'clock");
+      assert.equal(answer?.priority, "P1");
+      assert.equal(agent.inputs.length, 1);
+      assert.ok(agent.inputs[0]?.image, "agent saw the fresh frame");
+
+      const statsRes = await fetch(`http://127.0.0.1:${t.port}/stats`);
+      assert.equal(statsRes.status, 200);
+      const stats = (await statsRes.json()) as { utterances: number };
+      assert.equal(stats.utterances, 1);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("capture_now timeout falls back to the last frame, then to no image", async () => {
+  process.env.CAPTURE_TIMEOUT_MS = "50";
+  const agent = new MockAgentBrain();
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      // No frame yet: the agent goes without an image.
+      sendUtterance(ws, "ki hai saamne");
+      await collectUntil(ws, (m) => m.type === "speak" && m.kind === "answer", 2000);
+      assert.equal(agent.inputs.length, 1);
+      assert.equal(agent.inputs[0]?.image, undefined);
+
+      // Fresh frame (< 5 s): the agent gets it despite the timeout.
+      sendFrame(ws);
+      await collectUntil(ws, (m) => m.type === "speak" && m.kind === "cash", 2000);
+      sendUtterance(ws, "hor ki hai");
+      await collectUntil(ws, (m) => m.type === "speak" && m.text === "Mock saamne: counter te samaan 12 o'clock", 2000);
+      assert.equal(agent.inputs.length, 2);
+      assert.ok(agent.inputs[1]?.image, "agent fell back to the last frame");
+      assert.equal(agent.inputs[1]?.image?.hfovDeg, 66);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.CAPTURE_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+test("agent failure speaks the unsure fallback plus earcon:error", async () => {
+  process.env.CAPTURE_TIMEOUT_MS = "30";
+  const agent = new MockAgentBrain([new Error("spark exploded")]);
+  const t = await startTestServer(undefined, agent);
+  const origError = console.error;
+  console.error = () => {};
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "ki hai saamne");
+      const got = await collectUntil(ws, (m) => m.type === "speak", 2000);
+      assert.deepEqual(
+        got.find((m) => m.type === "speak"),
+        { type: "speak", id: "spk-1", text: "pakka nahi, dobara bolo", lang: "pa", priority: "P1", kind: "answer" }
+      );
+      assert.ok(got.some((m) => m.type === "earcon" && m.name === "error"), "error earcon sent");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    console.error = origError;
+    delete process.env.CAPTURE_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+test("agent look_around action toggles the session and pushes state", async () => {
+  process.env.CAPTURE_TIMEOUT_MS = "30";
+  const agent = new MockAgentBrain([
+    { say: "Look around on", positions: [], actions: [{ tool: "look_around", on: true }] },
+  ]);
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "look around on karo");
+      const got = await collectUntil(ws, (m) => m.type === "speak", 2000);
+      assert.equal(got.find((m) => m.type === "speak")?.text, "Look around on");
+      assert.ok(
+        got.some((m) => m.type === "state" && m.lookAround === true),
+        `expected look-around state, got: ${JSON.stringify(got)}`
+      );
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.CAPTURE_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+test("agent history trims to the last 10 turns", async () => {
+  process.env.CAPTURE_TIMEOUT_MS = "30";
+  const agent = new MockAgentBrain([
+    { say: "jawab", positions: [], actions: [] },
+  ]);
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      for (let i = 0; i < 7; i++) {
+        sendUtterance(ws, `sawal ${i}`);
+        await collectUntil(ws, (m) => m.type === "speak", 2000);
+      }
+      assert.equal(agent.inputs.length, 7);
+      assert.equal(agent.inputs[0]?.history.length, 0);
+      assert.equal(agent.inputs[1]?.history.length, 2);
+      assert.equal(agent.inputs[5]?.history.length, 10);
+      assert.equal(agent.inputs[6]?.history.length, 10);
+      assert.equal(agent.inputs[6]?.history[0]?.text, "sawal 1");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.CAPTURE_TIMEOUT_MS;
     await t.done();
   }
 });

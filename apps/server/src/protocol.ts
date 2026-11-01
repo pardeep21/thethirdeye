@@ -54,9 +54,13 @@ export interface CommandMessage {
   name: "mute" | "unmute" | "cancel";
 }
 
+/** Spoken-output script (TTS voice test pending, prompt 02 default gurmukhi). */
+export type SpokenScript = "gurmukhi" | "devanagari" | "latin";
+
 /** Phone -> server: settings that affect answers (from the settings screen). */
 export interface SettingsMessage {
   type: "settings";
+  script?: SpokenScript;
   lang: SpeakLang;
 }
 
@@ -181,7 +185,8 @@ export function isAudioMessage(v: unknown): v is AudioMessage {
 
 export function isSettingsMessage(v: unknown): v is SettingsMessage {
   if (!isRecord(v) || v.type !== "settings") return false;
-  return v.lang === "pa" || v.lang === "hi" || v.lang === "en";
+  if (v.lang !== "pa" && v.lang !== "hi" && v.lang !== "en") return false;
+  return v.script === undefined || v.script === "gurmukhi" || v.script === "devanagari" || v.script === "latin";
 }
 
 export function isCommandMessage(v: unknown): v is CommandMessage {

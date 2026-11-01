@@ -2,12 +2,24 @@
 // plus en/hi locks and edge cases.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderFind, renderProactive, summarizePeople } from "./phrases.js";
+import { renderAgentUnsure, renderClock, renderFind, renderProactive, summarizePeople } from "./phrases.js";
 import type { ProactiveEvent } from "./decision.js";
 
 function noteSeen(...denominations: Array<10 | 20 | 50 | 100 | 200 | 500>): ProactiveEvent {
   return { kind: "NOTE_SEEN", denominations, confidences: denominations.map(() => 0.9) };
 }
+
+test("clock words keep o'clock in code-mix", () => {
+  assert.equal(renderClock(2, "pa"), "2 o'clock");
+  assert.equal(renderClock(12, "hi"), "12 o'clock");
+  assert.equal(renderClock(10, "en"), "10 o'clock");
+});
+
+test("agent unsure fallback", () => {
+  assert.equal(renderAgentUnsure("pa"), "pakka nahi, dobara bolo");
+  assert.equal(renderAgentUnsure("hi"), "pakka nahi, dobara bolo");
+  assert.equal(renderAgentUnsure("en"), "not sure, say it again");
+});
 
 test("pa cash lines match MVP.md verbatim", () => {
   assert.equal(renderProactive(noteSeen(500)).text, "ਪੰਜ ਸੌ ਦਾ ਨੋਟ");

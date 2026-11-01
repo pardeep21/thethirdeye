@@ -1,6 +1,6 @@
 // Intent router: keyword classification of transcribed push-to-talk commands
 // in Punjabi/Hindi/English (Roman, Gurmukhi, Devanagari). Token-exact
-// matching (script-agnostic); mute/unmute only fire on short utterances so
+// matching (script-agnostic); mute/unmute/cancel only fire on short utterances so
 // "eh bol ki hai" stays a describe. Unknown -> silent (logged by the caller).
 
 export type Intent =
@@ -11,10 +11,24 @@ export type Intent =
   | { kind: "howmuch" }
   | { kind: "mute" }
   | { kind: "unmute" }
+  | { kind: "cancel" }
   | { kind: "unknown" };
 
 const MUTE = ["chup", "mute", "quiet", "silent", "ਚੁੱਪ", "चुप"];
 const UNMUTE = ["unmute", "bol", "speak", "ਬੋਲ", "बोल"];
+const CANCEL = [
+  "cancel",
+  "bas",
+  "band kar",
+  "band",
+  "stop",
+  "ruk",
+  "ruko",
+  "ਬਸ",
+  "ਰੁਕੋ",
+  "बस",
+  "रुको",
+];
 const READ = ["padh", "padho", "parh", "read", "ਪੜ੍ਹ", "पढ़"];
 const FIND_WHERE = [
   "kithe",
@@ -165,6 +179,7 @@ export function routeIntent(text: string): Intent {
   if (words.length <= 3) {
     if (hasAny(UNMUTE)) return { kind: "unmute" };
     if (hasAny(MUTE)) return { kind: "mute" };
+    if (hasAny(CANCEL)) return { kind: "cancel" };
   }
   if (hasAny(READ)) return { kind: "read" };
   if (hasAny(FIND_WHERE)) {

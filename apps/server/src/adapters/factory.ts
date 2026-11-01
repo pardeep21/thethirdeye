@@ -18,6 +18,17 @@ import {
   MockVisionTriage,
 } from "./mocks.js";
 import { createFaceMatcher } from "../faces/index.js";
+import type { AgentBrain } from "./agent.js";
+import {
+  agentDebugDirFromEnv,
+  agentImagePxFromEnv,
+  agentMaxTokensFromEnv,
+  agentModelFromEnv,
+  agentReasoningEffortFromEnv,
+  agentToolModeFromEnv,
+  MockAgentBrain,
+  OpenAICompatAgentBrain,
+} from "./agent.js";
 import { PeopleStore } from "../faces/store.js";
 import { OpenAICompatAnswer, OpenAICompatTriage } from "./openaiCompat.js";
 
@@ -44,6 +55,43 @@ export function metaReasoningEffortFromEnv(): string | undefined {
   return process.env.META_REASONING_EFFORT ?? "minimal";
 }
 
+function createAgentBrain(provider: ProviderName, deps?: AdapterDeps): AgentBrain {
+  if (provider === "mock") return new MockAgentBrain();
+  const common = {
+    maxTokens: agentMaxTokensFromEnv(),
+    reasoningEffort: agentReasoningEffortFromEnv(),
+    imagePx: agentImagePxFromEnv(),
+    toolMode: agentToolModeFromEnv(),
+    debugDir: deps?.debugDir ?? agentDebugDirFromEnv(),
+  };
+  switch (provider) {
+    case "meta":
+      return new OpenAICompatAgentBrain({
+        baseURL: process.env.META_BASE_URL ?? "https://api.meta.ai/v1",
+        model: agentModelFromEnv(process.env.META_MODEL ?? "muse-spark-1.3"),
+        apiKey: needEnv("META_API_KEY"),
+        ...common,
+      });
+    case "openrouter":
+      return new OpenAICompatAgentBrain({
+        baseURL: "https://openrouter.ai/api/v1",
+        model: agentModelFromEnv(process.env.OPENROUTER_MODEL ?? "meta/muse-spark-1.3"),
+        apiKey: needEnv("OPENROUTER_API_KEY"),
+        ...common,
+      });
+    case "openai":
+    case "local": {
+      const baseURL =
+        process.env.OPENAI_BASE_URL ?? (provider === "local" ? "http://localhost:11434/v1" : "https://api.openai.com/v1");
+      const model = agentModelFromEnv(
+        process.env.OPENAI_MODEL ?? (provider === "local" ? "muse-glimmer" : "gpt-4o-mini")
+      );
+      const apiKey = process.env.OPENAI_API_KEY ?? (provider === "local" ? "ollama" : needEnv("OPENAI_API_KEY"));
+      return new OpenAICompatAgentBrain({ baseURL, model, apiKey, ...common });
+    }
+  }
+}
+
 export function createAdapters(
   provider: ProviderName = providerFromEnv(),
   deps?: AdapterDeps
@@ -51,10 +99,12 @@ export function createAdapters(
   // Faces are always store-backed (even for mock) so enrollment works in
   // every mode; without an explicit store the data is memory-only.
   const faces = createFaceMatcher(deps?.store ?? new PeopleStore(":memory:"));
+  const agent = createAgentBrain(provider, deps);
   const mocks = {
     finder: new MockObjectFinder(),
     stt: new MockSpeechToText(),
     faces,
+    agent,
   };
   switch (provider) {
     case "mock":

@@ -129,6 +129,17 @@ export function summarizePeople(items: PersonBits[], lang: SpeakLang = "pa"): st
   return `${countWord(items.length, lang)} log: ${parts.join(", ")}`;
 }
 
+/** Clock position words. Code-mix keeps "o'clock" (DEV-PLAN section 2). */
+export function renderClock(hour: number, _lang: SpeakLang = "pa"): string {
+  return `${hour} o'clock`;
+}
+
+/** Agent fallback when it cannot answer (bad model JSON, no usable view). */
+export function renderAgentUnsure(lang: SpeakLang = "pa"): string {
+  if (lang === "en") return "not sure, say it again";
+  return "pakka nahi, dobara bolo";
+}
+
 /** "find X" answer from a box (or a miss). Used when SAM wiring lands. */
 export function renderFind(noun: string, box: Box | null, lang: SpeakLang = "pa"): string {
   if (!box) {

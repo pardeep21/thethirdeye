@@ -1,6 +1,7 @@
 // Model adapter layer (MVP.md section 2). Every model sits behind one of
 // these interfaces; providers are selected by PROVIDER env (mock-first).
 import type { Box, FaceHit, TriageResult } from "../protocol.js";
+import type { AgentBrain } from "./agent.js";
 
 export interface VisionTriage {
   triage(img: Buffer): Promise<TriageResult>;
@@ -36,6 +37,7 @@ export interface AdapterSet {
   finder: ObjectFinder;
   stt: SpeechToText;
   faces: FaceMatcher;
+  agent: AgentBrain;
 }
 
 export type ProviderName = "mock" | "meta" | "openrouter" | "openai" | "local";

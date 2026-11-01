@@ -82,6 +82,8 @@ test("audio and command guards", () => {
 
 test("settings guard", () => {
   assert.equal(isSettingsMessage({ type: "settings", lang: "hi" }), true);
+  assert.equal(isSettingsMessage({ type: "settings", lang: "pa", script: "latin" }), true);
+  assert.equal(isSettingsMessage({ type: "settings", lang: "pa", script: "roman" }), false);
   assert.equal(isSettingsMessage({ type: "settings", lang: "fr" }), false);
   assert.equal(isSettingsMessage({ type: "settings" }), false);
 });

@@ -64,6 +64,17 @@ test("mute and unmute, short utterances only", () => {
   assert.equal(routeIntent("eh bol ki hai saamne").kind, "describe");
 });
 
+test("cancel on short stop-words", () => {
+  assert.equal(routeIntent("bas").kind, "cancel");
+  assert.equal(routeIntent("band kar").kind, "cancel");
+  assert.equal(routeIntent("cancel").kind, "cancel");
+  assert.equal(routeIntent("ruko").kind, "cancel");
+  assert.equal(routeIntent("ਬਸ").kind, "cancel");
+  // "chup" stays mute (silences proactive speech); longer sentences go to the agent.
+  assert.equal(routeIntent("chup").kind, "mute");
+  assert.equal(routeIntent("bas, kainchi kithe hai daso menu jaldi").kind, "find");
+});
+
 test("greetings and chatter stay unknown (silent)", () => {
   assert.equal(routeIntent("hello").kind, "unknown");
   assert.equal(routeIntent("sat sri akal").kind, "unknown");
