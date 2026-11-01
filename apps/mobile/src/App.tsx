@@ -4,14 +4,14 @@
 // screens for the helper. Look-around switches to the ultra-wide lens with
 // a 2 s heartbeat; the server side of the mode switch lands in prompt 03.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { StyleSheet, View, StatusBar as SystemStatusBar, type StyleProp, type ViewStyle } from "react-native";
+import { AppState, StyleSheet, Text, View, StatusBar as SystemStatusBar, type StyleProp, type ViewStyle } from "react-native";
 import {
   Camera,
   useCameraDevice,
   useCameraPermission,
   type PhotoFile,
 } from "react-native-vision-camera";
-import { useKeepAwake } from "expo-keep-awake";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { useFonts } from "expo-font";
 import Constants from "expo-constants";
 import type {
@@ -32,14 +32,16 @@ import { usePushToTalk, type VoiceMode } from "./ptt";
 import { HomeScreen } from "./screens/HomeScreen";
 import { PeopleScreen } from "./screens/PeopleScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
+import { DisclaimerScreen } from "./screens/DisclaimerScreen";
 import { EnrollScreen } from "./EnrollScreen";
 import { AppStateContext, type Screen } from "./store";
-import { DEFAULT_SERVER_URL } from "./config";
+import { DEFAULT_APP_TOKEN, DEFAULT_SERVER_URL } from "./config";
+import { acceptDisclaimer, isDisclaimerAccepted } from "./disclaimer";
 import { ExpoRecognizer } from "./voice/recognizer";
 import { pickRecognitionLocale } from "./voice/locale";
 import { playEarcon } from "./voice/earcons";
 import { addCaption, useCaptions, usePartial } from "./voice/captions";
-import { GREETING, NO_NETWORK } from "./strings";
+import { GREETING, NO_NETWORK, STRINGS } from "./strings";
 import { colors } from "./theme";
 
 /** Min ms between gate evaluations: the frame path runs faster than 2 fps. */
@@ -50,7 +52,6 @@ const LOOK_HEARTBEAT_MS = 2000;
 const CASH_READ_TEXT = "eh kinne da";
 
 export default function App() {
-  useKeepAwake();
   const mainDevice = useCameraDevice("back");
   const { hasPermission, requestPermission } = useCameraPermission();
   const cameraRef = useRef<Camera>(null);
@@ -66,6 +67,13 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [screen, setScreen] = useState<Screen>("home");
   const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
+  const [appToken, setAppToken] = useState(DEFAULT_APP_TOKEN);
+  const [authFailed, setAuthFailed] = useState(false);
+  // First-launch honesty gate: null while the flag file is being read.
+  const [disclaimer, setDisclaimer] = useState<boolean | null>(null);
+  const disclaimerSpokenRef = useRef(false);
+  // Foreground tracking: the camera stops when the app backgrounds.
+  const [appActive, setAppActive] = useState(true);
   const [lang, setLang] = useState<SpeakLang>("pa");
   const [script, setScript] = useState<SpokenScript>("gurmukhi");
   const [muted, setMuted] = useState(false);
@@ -192,12 +200,17 @@ export default function App() {
         onUtteranceSent: (ts) => {
           utteranceTsRef.current = ts;
         },
+        onAuthFailure: () => {
+          if (wsRef.current !== ws) return;
+          setAuthFailed(true);
+        },
         onStatus: (ok) => {
           // Ignore events from a previous URL's socket: its async close
           // would otherwise speak "network nahi" right after a reconnect.
           if (wsRef.current !== ws) return;
           setConnected(ok);
           if (ok) {
+            setAuthFailed(false);
             saidNoNetworkRef.current = false;
             ws.sendSettings(langRef.current, scriptRef.current);
             if (lookRef.current) ws.sendMode(true);
@@ -219,6 +232,7 @@ export default function App() {
       {
         appVersion: Constants.expoConfig?.version ?? "dev",
         device: Constants.deviceName ?? "android",
+        ...(appToken ? { token: appToken } : {}),
       }
     );
     wsRef.current = ws;
@@ -228,7 +242,7 @@ export default function App() {
       wsRef.current = null;
       void queue.shutdown();
     };
-  }, [queue, serverUrl, refreshPeople]);
+  }, [queue, serverUrl, appToken, refreshPeople]);
 
   const queueRef = useRef(queue);
   queueRef.current = queue;
@@ -344,6 +358,11 @@ export default function App() {
     if (url) setServerUrl(url);
   }, []);
 
+  const saveToken = useCallback((token: string) => {
+    setAuthFailed(false);
+    setAppToken(token);
+  }, []);
+
   const cameraVisible = device != null && hasPermission;
   const showPreview = cameraVisible && showCamera && screen === "home";
   const renderCamera = (style: StyleProp<ViewStyle>): React.JSX.Element | null => {
@@ -355,14 +374,77 @@ export default function App() {
         photo={true}
         pixelFormat="yuv"
         frameProcessor={frameProcessor}
-        isActive={true}
+        isActive={appActive}
         zoom={(lensOverride ?? lens) === "ultrawide" ? device.minZoom : device.neutralZoom}
         style={style}
       />
     );
   };
 
+  // Battery: the camera (2 fps gate) runs only in the foreground, and
+  // keep-awake is held only while the camera runs. Backgrounding stops
+  // frames; the socket stays up and the heartbeat resumes on return.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      setAppActive(state === "active");
+    });
+    return () => sub.remove();
+  }, []);
+
+  const cameraRuns = appActive && cameraVisible;
+  useEffect(() => {
+    if (cameraRuns) {
+      void activateKeepAwakeAsync().catch(() => undefined);
+    } else {
+      void deactivateKeepAwake().catch(() => undefined);
+    }
+  }, [cameraRuns]);
+
+  // First-launch honesty gate.
+  useEffect(() => {
+    void isDisclaimerAccepted().then(setDisclaimer);
+  }, []);
+  useEffect(() => {
+    if (disclaimer === false && !disclaimerSpokenRef.current) {
+      disclaimerSpokenRef.current = true;
+      queue.enqueue({
+        type: "speak",
+        id: "disclaimer",
+        text: STRINGS[langRef.current].disclaimerSpoken,
+        lang: langRef.current,
+        priority: "P1",
+        kind: "system",
+      });
+    }
+  }, [disclaimer, queue]);
+
   if (!fontsLoaded) return null;
+
+  if (disclaimer === null) {
+    return (
+      <View style={styles.splash}>
+        <SystemStatusBar barStyle="light-content" />
+        <Text style={styles.splashText}>TheThirdEye</Text>
+      </View>
+    );
+  }
+
+  if (disclaimer === false) {
+    return (
+      <View style={styles.root}>
+        <SystemStatusBar barStyle="light-content" />
+        <DisclaimerScreen
+          title={STRINGS[lang].disclaimerTitle}
+          doneLabel={STRINGS[lang].iUnderstand}
+          backLabel={STRINGS[lang].backHome}
+          mode="first"
+          onDone={() => {
+            void acceptDisclaimer().then(() => setDisclaimer(true));
+          }}
+        />
+      </View>
+    );
+  }
 
   return (
     <AppStateContext.Provider
@@ -372,6 +454,9 @@ export default function App() {
         connected,
         serverUrl,
         saveUrl,
+        appToken,
+        saveToken,
+        authFailed,
         serverState,
         pttState,
         talk,
@@ -407,7 +492,15 @@ export default function App() {
         <SystemStatusBar barStyle="light-content" />
         {cameraVisible && screen === "peopleEnroll" ? renderCamera(styles.enrollCamera) : null}
         {cameraVisible && screen !== "peopleEnroll" && !showPreview ? renderCamera(styles.hiddenCamera) : null}
-        {screen === "settings" ? (
+        {screen === "about" ? (
+          <DisclaimerScreen
+            title={STRINGS[lang].about}
+            doneLabel={STRINGS[lang].iUnderstand}
+            backLabel={STRINGS[lang].backHome}
+            mode="about"
+            onDone={() => setScreen("settings")}
+          />
+        ) : screen === "settings" ? (
           <SettingsScreen />
         ) : screen === "people" ? (
           <PeopleScreen />
@@ -427,6 +520,8 @@ export default function App() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
+  splash: { flex: 1, backgroundColor: colors.bg, alignItems: "center", justifyContent: "center" },
+  splashText: { fontSize: 30, color: colors.text },
   hiddenCamera: { position: "absolute", width: 1, height: 1, opacity: 0 },
   enrollCamera: { width: "100%", height: 240, flex: 0 },
   previewWrap: {

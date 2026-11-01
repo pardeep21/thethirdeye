@@ -79,6 +79,16 @@ export const SCENE_TRACK_MAX_AGE_MS = 10_000;
 
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
 
+/** Shared WS token (empty/unset = open server for local dev). */
+export function appTokenFromEnv(): string | undefined {
+  const raw = process.env.APP_TOKEN;
+  if (raw === undefined || raw === "") return undefined;
+  return raw;
+}
+
+/** WS close code for rejected auth (application range 4000-4999). */
+export const WS_CLOSE_AUTH = 4401;
+
 function captureTimeoutFromEnv(): number {
   const raw = process.env.CAPTURE_TIMEOUT_MS;
   if (raw === undefined) return DEFAULT_CAPTURE_TIMEOUT_MS;
@@ -233,6 +243,10 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     const tracker = new FaceTracker();
     const pendingCaptures = new Map<string, (f: SessionFrame) => void>();
     let frameNo = 0;
+    // WS auth: when APP_TOKEN is set, the first message must be a hello
+    // carrying it; anything else (or a wrong token) closes the socket.
+    const appToken = appTokenFromEnv();
+    let authed = appToken === undefined;
 
     const send = (msg: DownMessage): void => {
       if (ws.readyState !== WebSocket.OPEN) return;
@@ -595,6 +609,22 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       } catch {
         return [];
       }
+      if (isHelloMessage(msg)) {
+        if (appToken !== undefined) {
+          if (msg.token !== appToken) {
+            console.log("rejecting hello without a valid APP_TOKEN");
+            ws.close(WS_CLOSE_AUTH, "missing or invalid app token");
+            return [];
+          }
+          authed = true;
+        }
+        return [];
+      }
+      if (!authed) {
+        console.log("rejecting message before hello auth");
+        ws.close(WS_CLOSE_AUTH, "missing or invalid app token");
+        return [];
+      }
       if (isFrameMessage(msg)) {
         const jpeg = Buffer.from(msg.jpegBase64, "base64");
         const hfovDeg = msg.hfovDeg ?? DEFAULT_HFOV_DEG;
@@ -649,9 +679,6 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           session.muted = false;
           pushState();
         } else engine.cancel();
-        return [];
-      }
-      if (isHelloMessage(msg)) {
         return [];
       }
       if (isUtteranceMessage(msg)) {

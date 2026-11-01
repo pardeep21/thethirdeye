@@ -92,8 +92,8 @@ android {
         applicationId 'com.thethirdeye.app'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "0.1.0"
+        versionCode 2
+        versionName "0.2.0"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -104,15 +104,27 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        // Release key: upload.keystore (git-ignored) + thethirdeye.* props
+        // in ~/.gradle/gradle.properties (see README). The config below is
+        // only referenced when those props exist.
+        release {
+            storeFile file(findProperty('thethirdeye.keystore') ?: 'upload.keystore')
+            storePassword findProperty('thethirdeye.storePassword') ?: ''
+            keyAlias findProperty('thethirdeye.keyAlias') ?: 'upload'
+            keyPassword findProperty('thethirdeye.keyPassword') ?: ''
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            if (findProperty('thethirdeye.storePassword')) {
+                signingConfig signingConfigs.release
+            } else {
+                println "WARNING: thethirdeye.* signing props not set; signing release with the debug key"
+                signingConfig signingConfigs.debug
+            }
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds

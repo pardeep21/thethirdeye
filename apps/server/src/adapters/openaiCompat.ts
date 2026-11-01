@@ -430,6 +430,15 @@ function toDataUrl(img: Buffer): string {
   return `data:image/jpeg;base64,${img.toString("base64")}`;
 }
 
+/**
+ * Debug image bytes: off by default (production-safe). Set
+ * DEBUG_LOG_IMAGES=1 to keep the data-URL prefix for local diagnosis.
+ */
+export function debugLogImagesFromEnv(): boolean {
+  const raw = (process.env.DEBUG_LOG_IMAGES ?? "false").toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 function debugRequest(
   params: Record<string, unknown>,
   imgBytes: number,
@@ -442,7 +451,11 @@ function debugRequest(
     response_format: params.response_format ?? null,
     reasoning_effort: params.reasoning_effort ?? null,
     prompt,
-    image: { bytes: imgBytes, dataUrlLength: dataUrl.length, dataUrlPrefix: dataUrl.slice(0, 80) },
+    image: {
+      bytes: imgBytes,
+      dataUrlLength: dataUrl.length,
+      dataUrlPrefix: debugLogImagesFromEnv() ? dataUrl.slice(0, 80) : null,
+    },
   };
 }
 

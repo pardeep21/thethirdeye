@@ -42,6 +42,8 @@ export interface WsEvents {
   onSpeak(msg: SpeakMessage): void;
   onEarcon(msg: EarconMessage): void;
   onCaptureNow(msg: CaptureNowMessage): void;
+  /** Fired when the server rejects the app token (no retry: fix Settings). */
+  onAuthFailure?(): void;
   onState(msg: StateMessage): void;
   onStatus(connected: boolean): void;
   /** Fired synchronously when an utterance goes up (latency tracking). */
@@ -51,7 +53,12 @@ export interface WsEvents {
 export interface WsIdent {
   appVersion: string;
   device: string;
+  /** Shared server token (APP_TOKEN); omit when the server sets none. */
+  token?: string;
 }
+
+/** WS close code the server uses for rejected auth (mirrors the server). */
+export const WS_CLOSE_AUTH = 4401;
 
 export interface FrameMeta {
   width: number;
@@ -83,7 +90,12 @@ export class EyeWs {
     const ws = new Ctor(this.url);
     this.ws = ws;
     ws.onopen = () => {
-      this.sendJson({ type: "hello", appVersion: this.ident.appVersion, device: this.ident.device });
+      this.sendJson({
+        type: "hello",
+        appVersion: this.ident.appVersion,
+        device: this.ident.device,
+        ...(this.ident.token ? { token: this.ident.token } : {}),
+      });
       this.events.onStatus(true);
     };
     ws.onmessage = (ev) => {
@@ -97,8 +109,14 @@ export class EyeWs {
         // Ignore malformed down-messages.
       }
     };
-    const down = () => {
+    const down = (ev: unknown) => {
       this.events.onStatus(false);
+      // Auth rejections need a Settings fix, not a retry loop.
+      const code = (ev as { code?: unknown } | null)?.code;
+      if (code === WS_CLOSE_AUTH) {
+        this.events.onAuthFailure?.();
+        return;
+      }
       this.scheduleReconnect();
     };
     ws.onclose = down;

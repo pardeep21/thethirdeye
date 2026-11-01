@@ -6,7 +6,7 @@ import type { SpeakLang, SpokenScript, StateMessage, UtteranceLang } from "../..
 import type { Caption } from "./voice/captions";
 import type { PttState, VoiceMode } from "./ptt";
 
-export type Screen = "home" | "people" | "peopleEnroll" | "settings";
+export type Screen = "home" | "people" | "peopleEnroll" | "settings" | "about";
 
 export interface AppState {
   screen: Screen;
@@ -15,6 +15,10 @@ export interface AppState {
   connected: boolean;
   serverUrl: string;
   saveUrl(url: string): void;
+  /** Shared WS token (empty = none); rejected servers set authFailed. */
+  appToken: string;
+  saveToken(token: string): void;
+  authFailed: boolean;
   serverState: StateMessage | null;
   // Voice + speech.
   pttState: PttState;

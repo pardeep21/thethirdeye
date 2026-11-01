@@ -61,6 +61,13 @@ export interface Strings {
   langPa: string;
   langHi: string;
   langEn: string;
+  authFailed: string;
+  appToken: string;
+  about: string;
+  aboutHint: string;
+  disclaimerTitle: string;
+  iUnderstand: string;
+  disclaimerSpoken: string;
 }
 
 const PA: Strings = {
@@ -121,6 +128,14 @@ const PA: Strings = {
   langPa: "Punjabi",
   langHi: "Hindi",
   langEn: "English",
+  authFailed: "Server token rejected — check Settings",
+  appToken: "App token",
+  about: "About",
+  aboutHint: "Honesty statement",
+  disclaimerTitle: "Please read",
+  iUnderstand: "Main samajh gaya · I understand",
+  disclaimerSpoken:
+    "TheThirdEye ik aid hai, medical device nahi. Eh galat ho sakda hai. Zaroori rakam duje bande to confirm karao.",
 };
 
 const HI: Strings = {
@@ -181,6 +196,14 @@ const HI: Strings = {
   langPa: "Punjabi",
   langHi: "Hindi",
   langEn: "English",
+  authFailed: "Server token rejected — check Settings",
+  appToken: "App token",
+  about: "About",
+  aboutHint: "Honesty statement",
+  disclaimerTitle: "Kripya padho",
+  iUnderstand: "Main samajh gaya · I understand",
+  disclaimerSpoken:
+    "TheThirdEye ek sahayak hai, medical device nahi. Ye galat ho sakta hai. Zaroori rakam doosre vyakti se confirm karo.",
 };
 
 const EN: Strings = {
@@ -241,6 +264,14 @@ const EN: Strings = {
   langPa: "Punjabi",
   langHi: "Hindi",
   langEn: "English",
+  authFailed: "Server token rejected — check Settings",
+  appToken: "App token",
+  about: "About",
+  aboutHint: "Honesty statement",
+  disclaimerTitle: "Please read",
+  iUnderstand: "I understand",
+  disclaimerSpoken:
+    "TheThirdEye is an aid, not a medical device. It can be wrong. Confirm important amounts with another person.",
 };
 
 export const STRINGS: Record<SpeakLang, Strings> = { pa: PA, hi: HI, en: EN };

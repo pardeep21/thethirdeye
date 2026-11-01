@@ -93,6 +93,14 @@ test("hello/utterance/listening guards", () => {
   assert.equal(isHelloMessage({ type: "hello", appVersion: "0.1.0", device: "s23" }), true);
   assert.equal(isHelloMessage({ type: "hello", appVersion: "0.1.0" }), false);
   assert.equal(
+    isHelloMessage({ type: "hello", appVersion: "0.1.0", device: "s23", token: "secret" }),
+    true
+  );
+  assert.equal(
+    isHelloMessage({ type: "hello", appVersion: "0.1.0", device: "s23", token: 42 }),
+    false
+  );
+  assert.equal(
     isUtteranceMessage({ type: "utterance", text: "ki hai", lang: "pa-IN", ts: 1 }),
     true
   );

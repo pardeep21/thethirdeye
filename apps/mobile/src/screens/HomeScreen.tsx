@@ -41,7 +41,9 @@ export function HomeScreen({ preview }: { preview?: ReactNode }): React.JSX.Elem
   const thinking = app.pttState === "sending" || app.serverState?.agentBusy === true;
   const visual: TalkVisual = listening ? "listening" : thinking ? "thinking" : app.speaking ? "speaking" : "idle";
 
-  const statusText = !app.connected
+  const statusText = app.authFailed
+    ? s.authFailed
+    : !app.connected
     ? s.reconnecting
     : listening
       ? `${s.connected} · ${s.listeningWord}`

@@ -262,6 +262,42 @@ test("debug file captures content, finish_reason, usage and params without the k
   }
 });
 
+test("debug files omit image bytes unless DEBUG_LOG_IMAGES=1", async () => {
+  const run = async (): Promise<string> => {
+    const dir = mkdtempSync(join(tmpdir(), "thethirdeye-debug-"));
+    try {
+      const { client } = stubClient([{ content: OK_JSON, finishReason: "stop" }]);
+      const t = new OpenAICompatTriage(
+        { baseURL: "http://x", model: "m", apiKey: "k", debugDir: dir },
+        client
+      );
+      await t.triage(Buffer.from("fake-image-bytes"), "img");
+      return readFileSync(join(dir, "img.json"), "utf8");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const saved = process.env.DEBUG_LOG_IMAGES;
+  try {
+    delete process.env.DEBUG_LOG_IMAGES;
+    const off = JSON.parse(await run()) as DebugFile;
+    assert.equal(
+      (off.attempts[0].request.image as { dataUrlPrefix: string | null }).dataUrlPrefix,
+      null
+    );
+    process.env.DEBUG_LOG_IMAGES = "1";
+    const on = JSON.parse(await run()) as DebugFile;
+    assert.ok(
+      ((on.attempts[0].request.image as { dataUrlPrefix: string }).dataUrlPrefix ?? "").startsWith(
+        "data:image/jpeg"
+      )
+    );
+  } finally {
+    if (saved === undefined) delete process.env.DEBUG_LOG_IMAGES;
+    else process.env.DEBUG_LOG_IMAGES = saved;
+  }
+});
+
 test("debug file is written even when parsing fails", async () => {
   const dir = mkdtempSync(join(tmpdir(), "thethirdeye-debug-"));
   try {

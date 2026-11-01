@@ -670,6 +670,73 @@ test("ultra-wide frames reach the cash prompt as a centre crop", async () => {
   }
 });
 
+function waitForClose(ws: WebSocket): Promise<{ code: number; reason: string }> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timed out waiting for close")), 5000);
+    ws.once("close", (code: number, reason: Buffer) => {
+      clearTimeout(timer);
+      resolve({ code, reason: reason.toString() });
+    });
+  });
+}
+
+function sendHello(ws: WebSocket, token?: string): void {
+  ws.send(
+    JSON.stringify({
+      type: "hello",
+      appVersion: "test",
+      device: "test",
+      ...(token !== undefined ? { token } : {}),
+    })
+  );
+}
+
+test("APP_TOKEN set: messages before hello are rejected with 4401", async () => {
+  process.env.APP_TOKEN = "s3cret";
+  const t = await startTestServer();
+  try {
+    const ws = await openClient(t.port);
+    try {
+      const closed = waitForClose(ws);
+      sendFrame(ws);
+      const { code } = await closed;
+      assert.equal(code, 4401);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.APP_TOKEN;
+    await t.done();
+  }
+});
+
+test("APP_TOKEN set: wrong-token hello is rejected, right token admitted", async () => {
+  process.env.APP_TOKEN = "s3cret";
+  const t = await startTestServer();
+  try {
+    const bad = await openClient(t.port);
+    try {
+      const closed = waitForClose(bad);
+      sendHello(bad, "wrong");
+      assert.equal((await closed).code, 4401);
+    } finally {
+      bad.close();
+    }
+    const good = await openClient(t.port);
+    try {
+      sendHello(good, "s3cret");
+      sendFrame(good);
+      const raw = await nextMessage(good);
+      assert.equal((JSON.parse(raw) as { type: string }).type, "speak");
+    } finally {
+      good.close();
+    }
+  } finally {
+    delete process.env.APP_TOKEN;
+    await t.done();
+  }
+});
+
 test("capture_now timeout falls back to the last frame, then to no image", async () => {
   process.env.CAPTURE_TIMEOUT_MS = "50";
   const agent = new MockAgentBrain();

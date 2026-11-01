@@ -65,6 +65,7 @@ export function SettingsScreen(): React.JSX.Element {
   const app = useAppState();
   const s = STRINGS[app.lang];
   const [url, setUrl] = useState(app.serverUrl);
+  const [token, setToken] = useState(app.appToken);
 
   const langs: Array<{ id: SpeakLang; label: string }> = [
     { id: "pa", label: s.langPa },
@@ -99,8 +100,23 @@ export function SettingsScreen(): React.JSX.Element {
             autoCorrect={false}
             accessibilityLabel={s.serverUrl}
           />
+          <TextInput
+            style={styles.input}
+            value={token}
+            onChangeText={setToken}
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
+            accessibilityLabel={s.appToken}
+            accessibilityHint="Shared server token; empty when the server sets none"
+            placeholder={s.appToken}
+            placeholderTextColor={colors.muted}
+          />
           <Pressable
-            onPress={() => app.saveUrl(url.trim())}
+            onPress={() => {
+              app.saveUrl(url.trim());
+              app.saveToken(token);
+            }}
             accessibilityRole="button"
             accessibilityLabel={s.saveReconnect}
             style={styles.saveButton}
@@ -198,6 +214,17 @@ export function SettingsScreen(): React.JSX.Element {
           >
             <Text style={styles.optionText}>{app.muted ? "ON" : "OFF"}</Text>
             <Toggle on={app.muted} />
+          </Pressable>
+        </Section>
+        <Section title={s.about}>
+          <Pressable
+            onPress={() => app.setScreen("about")}
+            accessibilityRole="button"
+            accessibilityLabel={s.about}
+            accessibilityHint={s.aboutHint}
+            style={styles.saveButton}
+          >
+            <Text style={styles.saveText}>{s.aboutHint}</Text>
           </Pressable>
         </Section>
       </ScrollView>

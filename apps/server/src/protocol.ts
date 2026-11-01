@@ -83,6 +83,8 @@ export interface HelloMessage {
   type: "hello";
   appVersion: string;
   device: string;
+  /** Shared WS token; required when the server sets APP_TOKEN. */
+  token?: string;
 }
 
 /** Phone -> server: recognised push-to-talk text (on-device STT path). */
@@ -203,7 +205,11 @@ export function isCommandMessage(v: unknown): v is CommandMessage {
 
 export function isHelloMessage(v: unknown): v is HelloMessage {
   if (!isRecord(v) || v.type !== "hello") return false;
-  return typeof v.appVersion === "string" && typeof v.device === "string";
+  return (
+    typeof v.appVersion === "string" &&
+    typeof v.device === "string" &&
+    (v.token === undefined || typeof v.token === "string")
+  );
 }
 
 export function isUtteranceMessage(v: unknown): v is UtteranceMessage {
