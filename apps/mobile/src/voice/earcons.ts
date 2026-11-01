@@ -22,6 +22,7 @@ function getPlayer(): AudioPlayer {
 }
 
 export function playEarcon(name: EarconName): void {
+  console.log(`[voice] earcon ${name}`);
   try {
     const p = getPlayer();
     p.replace(SOURCES[name]);

@@ -86,6 +86,9 @@ export function usePushToTalk(opts: PushToTalkOpts): { pttState: PttState; talk:
   const dispatch = useCallback(
     (event: PttEvent) => {
       const { state, effects } = pttTransition(machineRef.current, event, Date.now());
+      console.log(
+        `[voice] event=${event.type} ${machineRef.current.phase}->${state.phase} fx=${effects.map((f) => f.type).join(",")}`
+      );
       machineRef.current = state;
       setMachine(state);
       for (const fx of effects) runEffect(fx);
@@ -188,6 +191,7 @@ export function usePushToTalk(opts: PushToTalkOpts): { pttState: PttState; talk:
   }, [voiceMode, recognizer, recorder]);
 
   const press = useCallback(() => {
+    console.log(`[voice] press mode=${optsRef.current.voiceMode} recog=${optsRef.current.recogLang}`);
     if (optsRef.current.voiceMode === "server_audio") void toggleAudio();
     else dispatch({ type: "press" });
   }, [dispatch, toggleAudio]);

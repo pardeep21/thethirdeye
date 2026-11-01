@@ -93,6 +93,9 @@ export default function App() {
         },
         onState: (msg) => setServerState(msg),
         onStatus: (ok) => {
+          // Ignore events from a previous URL's socket: its async close
+          // would otherwise speak "network nahi" right after a reconnect.
+          if (wsRef.current !== ws) return;
           setConnected(ok);
           if (ok) {
             saidNoNetworkRef.current = false;

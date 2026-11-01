@@ -49,13 +49,21 @@ export function getCaptions(): Caption[] {
   return [...captions];
 }
 
+/**
+ * Stable snapshot for useSyncExternalStore: the same array reference until
+ * addCaption replaces it. (Returning a copy here re-renders forever.)
+ */
+function getCaptionSnapshot(): Caption[] {
+  return captions;
+}
+
 export function getPartial(): string | null {
   return partial;
 }
 
 /** Last 5 speak lines, oldest first. */
 export function useCaptions(): Caption[] {
-  return useSyncExternalStore(subscribe, getCaptions, getCaptions);
+  return useSyncExternalStore(subscribe, getCaptionSnapshot, getCaptionSnapshot);
 }
 
 /** Live partial transcript, or null when not listening. */

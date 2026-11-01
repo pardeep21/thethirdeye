@@ -58,18 +58,22 @@ export class ExpoRecognizer implements DeviceRecognizer {
       const first = ev.results[0];
       const text = first?.transcript ?? "";
       const confidence = first && first.confidence >= 0 ? first.confidence : undefined;
+      console.log(`[voice] result final=${ev.isFinal} text="${text}" confidence=${confidence}`);
       for (const cb of this.results) cb({ text, final: ev.isFinal, confidence });
     });
     ExpoSpeechRecognitionModule.addListener("error", (ev: ExpoSpeechRecognitionErrorEvent) => {
       this.active = false;
+      console.log(`[voice] error code=${ev.error} message=${ev.message} native=${ev.code}`);
       for (const cb of this.errors) cb(ev.error);
     });
     ExpoSpeechRecognitionModule.addListener("end", () => {
       this.active = false;
+      console.log("[voice] end");
       for (const cb of this.ends) cb();
     });
     ExpoSpeechRecognitionModule.addListener("nomatch", () => {
       this.active = false;
+      console.log("[voice] nomatch");
       for (const cb of this.nomatches) cb();
     });
   }
@@ -85,12 +89,17 @@ export class ExpoRecognizer implements DeviceRecognizer {
 
   start(opts: { lang: string; partial: boolean }): void {
     this.wire();
-    if (this.active) return;
+    if (this.active) {
+      console.log("[voice] start ignored: already active");
+      return;
+    }
+    console.log(`[voice] start lang=${opts.lang} partial=${opts.partial}`);
     this.active = true;
     // RECORD_AUDIO is requested on first use; a denial surfaces as an
     // error event so the PTT machine takes its normal error path.
     void ExpoSpeechRecognitionModule.requestPermissionsAsync().then(
       (perm) => {
+        console.log(`[voice] record permission granted=${perm.granted}`);
         if (!perm.granted) {
           this.active = false;
           for (const cb of this.errors) cb("not-allowed");
@@ -101,9 +110,9 @@ export class ExpoRecognizer implements DeviceRecognizer {
             lang: opts.lang,
             interimResults: opts.partial,
             maxAlternatives: 1,
-            // Prefer on-device recognition when the model is present, but
-            // allow the network path (this is a preference, not a demand).
-            androidIntentOptions: { EXTRA_PREFER_OFFLINE: true },
+            // Offline is deliberately NOT preferred: on the S23 stack PREFER
+            // behaves as REQUIRE (error 13); recognition uses the network.
+            androidIntentOptions: { EXTRA_PREFER_OFFLINE: false },
           });
         } catch {
           this.active = false;
