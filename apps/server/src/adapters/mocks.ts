@@ -3,6 +3,7 @@
 import type { Box, FaceHit, SceneTriage, TriageResult } from "../protocol.js";
 import type {
   FaceMatcher,
+  MatchedFace,
   NamedTriage,
   ObjectFinder,
   SpeechToText,
@@ -72,7 +73,24 @@ export class MockSpeechToText implements SpeechToText {
 }
 
 export class MockFaceMatcher implements FaceMatcher {
-  async match(_img: Buffer): Promise<FaceHit[]> {
-    return [];
+  /** Scripted matchDetailed answers, one per call (last repeats). */
+  private calls = 0;
+  /** Scripted duplicate-check answer. */
+  embeddingHit: FaceHit | null = null;
+
+  constructor(private readonly script: MatchedFace[][] = []) {}
+
+  async match(img: Buffer): Promise<FaceHit[]> {
+    const detailed = await this.matchDetailed(img);
+    return detailed.map((d) => d.hit).filter((h): h is FaceHit => h !== null);
+  }
+
+  async matchDetailed(_img: Buffer): Promise<MatchedFace[]> {
+    const idx = Math.min(this.calls++, Math.max(0, this.script.length - 1));
+    return this.script[idx] ?? [];
+  }
+
+  matchEmbedding(_embedding: number[]): FaceHit | null {
+    return this.embeddingHit;
   }
 }

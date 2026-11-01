@@ -5,9 +5,23 @@ import assert from "node:assert/strict";
 import {
   renderAgentUnsure,
   renderClock,
+  renderConsentDenied,
+  renderEnrollAsk,
+  renderEnrollDuplicate,
+  renderEnrollGone,
+  renderEnrollKnown,
+  renderEnrollNoFace,
+  renderEnrollQuality,
+  renderEnrollSaved,
+  renderEnrollWhich,
   renderFind,
+  renderForgot,
+  renderForgetAsk,
+  renderForgetUnknown,
+  renderForgetWhich,
   renderOkay,
   renderProactive,
+  renderRenamed,
   summarizePeople,
 } from "./phrases.js";
 import type { ProactiveEvent } from "./decision.js";
@@ -249,6 +263,51 @@ test("person lines keep rough words without coordinates", () => {
     people: [{ position: "right", distance: "far", x: 0.9 }],
   };
   assert.equal(renderProactive(noHfov).text, "Ik banda, right side door");
+});
+
+test("known arrival carries the clock when the track has one", () => {
+  assert.equal(
+    renderProactive({ kind: "KNOWN_ARRIVED", personId: "p1", name: "Ravi", clock: 2 }).text,
+    "Ravi ਆ ਗਿਆ, 2 o'clock"
+  );
+  assert.equal(
+    renderProactive({ kind: "KNOWN_ARRIVED", personId: "p1", name: "Ravi", clock: 2 }, "en").text,
+    "Ravi is here, 2 o'clock"
+  );
+});
+
+test("kaun hai prefers track clocks and tolerates missing positions", () => {
+  assert.equal(summarizePeople([{ name: "Ravi", clock: 2, distance: "near" }]), "Ravi 2 o'clock");
+  assert.equal(
+    summarizePeople([
+      { name: "Ravi", clock: 2, distance: "near" },
+      { gender: "woman", clock: 10, distance: "far" },
+    ]),
+    "Do log: Ravi 2 o'clock, ik aurat 10 o'clock"
+  );
+  // A bad clock falls back to the rough words instead of crashing.
+  assert.equal(
+    summarizePeople([{ name: "Ravi", clock: 99, distance: "near" }]),
+    "Ravi counter te"
+  );
+});
+
+test("enrollment and forget phrases", () => {
+  assert.equal(renderEnrollAsk("Ravi"), "Ravi nu yaad rakhaan? Haan ya na dasso");
+  assert.equal(renderEnrollAsk("Ravi", "en"), "Ravi, save? Say yes or no");
+  assert.equal(renderEnrollSaved("Ravi"), "Ravi yaad ho gaya");
+  assert.equal(renderEnrollKnown("Ravi"), "Ravi pehlan ton yaad hai");
+  assert.equal(renderEnrollDuplicate("Ravi", "Raj"), "Eh taan Raj hai. Ravi naa rakhaan?");
+  assert.equal(renderEnrollNoFace(), "Saamne koi chehra nahi");
+  assert.equal(renderEnrollGone(), "Oh banda hun nahi dikhda");
+  assert.equal(renderEnrollWhich(), "Kaun wala? Clock dasso");
+  assert.equal(renderEnrollQuality(), "Chehra saaf dikhao, phir dasso");
+  assert.equal(renderConsentDenied("Ravi"), "Theek hai, Ravi nahi yaad kita");
+  assert.equal(renderForgetAsk("Ravi"), "Ravi nu bhul jaan?");
+  assert.equal(renderForgot("Ravi"), "Ravi bhul gaya");
+  assert.equal(renderForgetUnknown("Ravi"), "Ravi taan yaad hi nahi si");
+  assert.equal(renderForgetWhich(), "Naam poora dasso");
+  assert.equal(renderRenamed("Ravi"), "Naa Ravi kar ditta");
 });
 
 test("kaun hai answers use clocks when available", () => {

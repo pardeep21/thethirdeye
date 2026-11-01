@@ -2,8 +2,8 @@
 // timestamps. Renderer is a stub so these assert engine behavior only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DecisionEngine, type DecisionEvent } from "./decision.js";
-import type { Denomination, FaceHit, TriageResult } from "./protocol.js";
+import { DecisionEngine, type DecisionEvent, type KnownTrackSight } from "./decision.js";
+import type { Denomination, TriageResult } from "./protocol.js";
 
 function note(d: Denomination | null, c: number): TriageResult {
   return { notes: [{ denomination: d, confidence: c }], people: [] };
@@ -18,8 +18,13 @@ function people(n: number): TriageResult {
   };
 }
 
-function hits(id: string, name: string, score: number): FaceHit[] {
-  return [{ personId: id, name, score }];
+function hits(id: string, name: string, _score: number, clock = 12): KnownTrackSight[] {
+  return [{ knownPersonId: id, knownName: name, clock }];
+}
+
+/** A visible but unenrolled face: never fires the known path. */
+function strangers(): KnownTrackSight[] {
+  return [{ clock: 2 }];
 }
 
 function makeEngine(): { eng: DecisionEngine; rendered: DecisionEvent[] } {
@@ -154,11 +159,19 @@ test("different enrolled people fire independently", () => {
   assert.deepEqual(kinds(eng.onFrame(EMPTY, hits("p2", "Simran", 0.9), 1500)), ["KNOWN_ARRIVED"]);
 });
 
-test("below-threshold face scores never fire", () => {
+test("unknown tracks (no enrolled match) never fire the known path", () => {
   const { eng } = makeEngine();
   for (const t of [0, 500, 1000, 1500]) {
-    assert.deepEqual(kinds(eng.onFrame(EMPTY, hits("p1", "Ravi", 0.3), t)), [], `t=${t}`);
+    assert.deepEqual(kinds(eng.onFrame(EMPTY, strangers(), t)), [], `t=${t}`);
   }
+});
+
+test("known arrival carries the track clock", () => {
+  const { eng } = makeEngine();
+  eng.onFrame(EMPTY, hits("p1", "Ravi", 0.9, 2), 0);
+  const fired = eng.onFrame(EMPTY, hits("p1", "Ravi", 0.9, 2), 500);
+  assert.deepEqual(kinds(fired), ["KNOWN_ARRIVED"]);
+  assert.equal((fired[0] as { clock: number }).clock, 2);
 });
 
 test("person count up for 2 frames fires PERSON_ARRIVED, then silent 2 min", () => {

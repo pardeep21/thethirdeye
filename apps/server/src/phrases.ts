@@ -35,25 +35,37 @@ function countWord(n: number, lang: SpeakLang): string {
 }
 
 interface Place {
-  position: "left" | "centre" | "right";
-  distance: "near" | "far";
+  position?: "left" | "centre" | "right";
+  distance: "near" | "mid" | "far";
   /** Normalised x from scene triage; with hfovDeg this renders a clock hour. */
   x?: number;
+  /** Pre-rendered clock hour from a face track (preferred over x). */
+  clock?: number;
 }
 
 /**
- * Position words: a clock hour whenever x + hfovDeg are available, else
- * the rough words (centre+near is the counter; far is the door side).
+ * Position words: a track clock hour when present, else calibrated x +
+ * hfovDeg, else the rough words (centre+near is the counter; far is the
+ * door side). Mid counts as far wording: it is not at the counter.
  */
 function where(p: Place, lang: SpeakLang, hfovDeg?: number): string {
+  if (
+    typeof p.clock === "number" &&
+    Number.isFinite(p.clock) &&
+    p.clock >= 1 &&
+    p.clock <= 12
+  ) {
+    return renderClock(p.clock, lang);
+  }
   if (typeof p.x === "number" && Number.isFinite(p.x) && typeof hfovDeg === "number") {
     return renderClock(toClock(p.x, hfovDeg), lang);
   }
-  if (p.position === "centre") {
+  const position = p.position ?? "centre";
+  if (position === "centre") {
     if (p.distance === "near") return lang === "en" ? "at the counter" : lang === "hi" ? "counter par" : "counter te";
     return lang === "en" ? "near the door" : lang === "hi" ? "darwaze ke paas" : "door kol";
   }
-  const side = p.position === "left" ? "left side" : "right side";
+  const side = position === "left" ? "left side" : "right side";
   if (p.distance === "near") return side;
   return lang === "en" ? `${side}, far` : `${side} door`;
 }
@@ -124,10 +136,12 @@ export function renderProactive(
       if (lang === "en") return { text: "Not sure, straighten the note", lang };
       if (lang === "hi") return { text: "पक्का नहीं, नोट सीधा करो", lang };
       return { text: "ਪੱਕਾ ਨਹੀਂ, ਨੋਟ ਸਿੱਧਾ ਕਰੋ", lang };
-    case "KNOWN_ARRIVED":
-      if (lang === "en") return { text: `${event.name} is here`, lang };
-      if (lang === "hi") return { text: `${event.name} आ गया`, lang };
-      return { text: `${event.name} ਆ ਗਿਆ`, lang };
+    case "KNOWN_ARRIVED": {
+      const at = event.clock === undefined ? "" : `, ${renderClock(event.clock, lang)}`;
+      if (lang === "en") return { text: `${event.name} is here${at}`, lang };
+      if (lang === "hi") return { text: `${event.name} आ गया${at}`, lang };
+      return { text: `${event.name} ਆ ਗਿਆ${at}`, lang };
+    }
     case "PERSON_ARRIVED": {
       if (event.count <= 1) {
         const first: UnknownBits = event.people[0] ?? { position: "centre", distance: "near" };
@@ -190,6 +204,104 @@ export function summarizePeople(items: PersonBits[], lang: SpeakLang = "pa", hfo
 export function renderAgentUnsure(lang: SpeakLang = "pa"): string {
   if (lang === "en") return "not sure, say it again";
   return "pakka nahi, dobara bolo";
+}
+
+/** Voice enrollment: the consent question. Spoken after remember_person. */
+export function renderEnrollAsk(name: string, lang: SpeakLang = "pa"): string {
+  if (lang === "en") return `${name}, save? Say yes or no`;
+  if (lang === "hi") return `${name} ko yaad rakhoon? Haan ya na`;
+  return `${name} nu yaad rakhaan? Haan ya na dasso`;
+}
+
+/** Voice enrollment succeeded. */
+export function renderEnrollSaved(name: string, lang: SpeakLang = "pa"): string {
+  if (lang === "en") return `${name} saved`;
+  if (lang === "hi") return `${name} yaad ho gaya`;
+  return `${name} yaad ho gaya`;
+}
+
+/** That face is already enrolled under this name. */
+export function renderEnrollKnown(name: string, lang: SpeakLang = "pa"): string {
+  if (lang === "en") return `${name} is already saved`;
+  if (lang === "hi") return `${name} pehle se yaad hai`;
+  return `${name} pehlan ton yaad hai`;
+}
+
+/** That face is enrolled under a different name; asks to rename. */
+export function renderEnrollDuplicate(name: string, existing: string, lang: SpeakLang = "pa"): string {
+  if (lang === "en") return `That's already ${existing}. Rename to ${name}?`;
+  if (lang === "hi") return `Ye to ${existing} hai. ${name} naam rakhoon?`;
+  return `Eh taan ${existing} hai. ${name} naa rakhaan?`;
+}
+
+/** Remember asked with no face in front. */
+export function renderEnrollNoFace(lang: SpeakLang = "pa"): string {
+  if (lang === "en") return "No face in front";
+  if (lang === "hi") return "Saamne koi chehra nahi";
+  return "Saamne koi chehra nahi";
+}
+
+/** The named track left before consent completed. */
+export function renderEnrollGone(lang: SpeakLang = "pa"): string {
+  if (lang === "en") return "That person is gone";
+  if (lang === "hi") return "Vo ab nahi dikh raha";
+  return "Oh banda hun nahi dikhda";
+}
+
+/** Several unknown faces: the user picks one by clock. */
+export function renderEnrollWhich(lang: SpeakLang = "pa"): string {
+  if (lang === "en") return "Which one? Tell me the clock";
+  if (lang === "hi") return "Kaun sa? Clock batao";
+  return "Kaun wala? Clock dasso";
+}
+
+/** Track samples are too few or too poor to enroll from. */
+export function renderEnrollQuality(lang: SpeakLang = "pa"): string {
+  if (lang === "en") return "Show the face clearly, then tell me";
+  if (lang === "hi") return "Chehra saaf dikhao, phir bolo";
+  return "Chehra saaf dikhao, phir dasso";
+}
+
+/** The user declined the consent question. */
+export function renderConsentDenied(name: string, lang: SpeakLang = "pa"): string {
+  if (lang === "en") return `Okay, didn't save ${name}`;
+  if (lang === "hi") return `Theek hai, ${name} nahi yaad kiya`;
+  return `Theek hai, ${name} nahi yaad kita`;
+}
+
+/** Forget asked: confirm before deleting the enrollment. */
+export function renderForgetAsk(name: string, lang: SpeakLang = "pa"): string {
+  if (lang === "en") return `Forget ${name}?`;
+  if (lang === "hi") return `${name} ko bhool jaon?`;
+  return `${name} nu bhul jaan?`;
+}
+
+/** Enrollment deleted. */
+export function renderForgot(name: string, lang: SpeakLang = "pa"): string {
+  if (lang === "en") return `Forgot ${name}`;
+  if (lang === "hi") return `${name} bhool gaya`;
+  return `${name} bhul gaya`;
+}
+
+/** Forget asked for a name nobody enrolled. */
+export function renderForgetUnknown(name: string, lang: SpeakLang = "pa"): string {
+  if (lang === "en") return `I didn't know ${name}`;
+  if (lang === "hi") return `${name} to yaad hi nahi tha`;
+  return `${name} taan yaad hi nahi si`;
+}
+
+/** Forget matched several people: the user narrows it down. */
+export function renderForgetWhich(lang: SpeakLang = "pa"): string {
+  if (lang === "en") return "Say the full name";
+  if (lang === "hi") return "Poora naam bolo";
+  return "Naam poora dasso";
+}
+
+/** Duplicate-confirm granted: the enrollment was renamed. */
+export function renderRenamed(name: string, lang: SpeakLang = "pa"): string {
+  if (lang === "en") return `Renamed to ${name}`;
+  if (lang === "hi") return `Naam ${name} kar diya`;
+  return `Naa ${name} kar ditta`;
 }
 
 /** "find X" answer from a box (or a miss). Used when SAM wiring lands. */

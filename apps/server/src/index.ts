@@ -22,7 +22,7 @@ import {
 import { LatestFrameStore } from "./store.js";
 import { createAdapters, providerFromEnv, type NamedTriage } from "./adapters/factory.js";
 import type { AgentBrain, AgentOutput } from "./adapters/agent.js";
-import { DecisionEngine, FACE_MATCH_THRESHOLD, type DecisionEvent } from "./decision.js";
+import { DecisionEngine, type DecisionEvent } from "./decision.js";
 import { SceneNarrator } from "./narration.js";
 import {
   renderAgentUnsure,
@@ -37,10 +37,11 @@ import { applyAgentActions } from "./actions.js";
 import { Session, sceneFromPerception, type SessionFrame } from "./session.js";
 import { UtteranceStats } from "./stats.js";
 import { routeIntent } from "./intent.js";
-import type { FaceHit, TriageResult } from "./protocol.js";
 import { PeopleStore } from "./faces/store.js";
 import type { FaceEmbedder } from "./faces/embed.js";
 import { checkEnrollFace } from "./faces/quality.js";
+import { FaceTracker } from "./faces/tracker.js";
+import type { MatchedFace } from "./adapters/index.js";
 import { defaultDbPath, facesEveryNFromEnv, selectEmbedder, shouldRunFaces } from "./faces/index.js";
 
 export interface ServerHandles {
@@ -63,6 +64,8 @@ export const DEFAULT_CAPTURE_TIMEOUT_MS = 800;
 export const LAST_FRAME_MAX_AGE_MS = 5000;
 /** HFOV fallback when a frame carries none (main lens until calibrated). */
 export const DEFAULT_HFOV_DEG = 66;
+/** Tracks older than this leave the scene state (the agent's refs stay fresh). */
+export const SCENE_TRACK_MAX_AGE_MS = 10_000;
 
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
 
@@ -155,7 +158,10 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       }
       embeddings.push(checked.face.embedding);
     }
-    return { status: 201, json: people.addPerson(rec.name as string, embeddings) };
+    return {
+      status: 201,
+      json: people.addPerson(rec.name as string, embeddings, { method: "form", ts: Date.now() }),
+    };
   }
 
   const http = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -212,7 +218,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       renderProactive(e, session.lang, session.lastFrame?.hfovDeg)
     );
     const narrator = new SceneNarrator();
-    let lastPerception: { triage: TriageResult; faces: FaceHit[] } | null = null;
+    const tracker = new FaceTracker();
     const pendingCaptures = new Map<string, (f: SessionFrame) => void>();
     let frameNo = 0;
 
@@ -246,23 +252,12 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     };
 
     function whoParts(): PersonBits[] {
-      if (!lastPerception) return [];
-      const known = lastPerception.faces.filter(
-        (h) => h.personId && h.name && h.score >= FACE_MATCH_THRESHOLD
-      );
-      const parts: PersonBits[] = known.map((h, i) => {
-        const p = lastPerception?.triage.people[i];
-        return {
-          name: h.name ?? undefined,
-          position: p?.position ?? "centre",
-          distance: p?.distance ?? "near",
-          x: p?.x,
-        };
-      });
-      for (const p of lastPerception.triage.people.slice(known.length)) {
-        parts.push({ position: p.position, distance: p.distance, gender: p.gender, x: p.x });
-      }
-      return parts;
+      return session.sceneState.people.map((p) => ({
+        name: p.knownName,
+        clock: p.clock,
+        distance: p.distance,
+        gender: p.gender,
+      }));
     }
 
     /** Single place that flips look-around: session, narrator, then the phone. */
@@ -432,13 +427,23 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       }
       const tModelEnd = Date.now();
 
-      await applyAgentActions(output.actions, { session, engine, send, cashCheck: cashRead, narrator });
+      const peopleSaid = await applyAgentActions(output.actions, {
+        session,
+        engine,
+        send,
+        cashCheck: cashRead,
+        narrator,
+        people: { store: people, tracker, faces: adapters.faces },
+        utterance: text,
+      });
       const rendered =
         output.say === null ? null : renderPositions(output.say, output.positions, usedHfov, session.lang);
-      if (rendered) engine.answer(rendered, session.lang);
+      // People tools speak their own deterministic line; the model's say
+      // would double-speak the consent question, so it is skipped then.
+      if (!peopleSaid && rendered) engine.answer(rendered, session.lang);
       sendDrained();
       session.pushTurn({ role: "user", text });
-      session.pushTurn({ role: "assistant", text: rendered ?? "" });
+      session.pushTurn({ role: "assistant", text: peopleSaid ?? rendered ?? "" });
       session.agentBusy = false;
       pushState();
       const tSpeak = Date.now();
@@ -535,13 +540,15 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           // coordinates + objects); otherwise the fast cash-only prompt.
           // Faces run every Nth frame (FACES_EVERY_N; slow machines skip).
           const runFaces = shouldRunFaces(frameNo++, facesEveryN);
-          const [result, hits] = await Promise.all([
+          const [result, matched] = await Promise.all([
             session.lookAround ? triage.triageScene(jpeg) : triage.triage(jpeg),
-            runFaces ? adapters.faces.match(jpeg) : Promise.resolve([] as FaceHit[]),
+            runFaces ? adapters.faces.matchDetailed(jpeg) : Promise.resolve([] as MatchedFace[]),
           ]);
-          lastPerception = { triage: result, faces: hits };
-          session.sceneState = sceneFromPerception(result, hits, session.lookAround, hfovDeg);
-          engine.onFrame(result, hits);
+          const nowMs = Date.now();
+          const tracks = runFaces ? tracker.update(matched, hfovDeg, nowMs) : tracker.liveTracks();
+          const fresh = tracks.filter((t) => nowMs - t.lastSeen <= SCENE_TRACK_MAX_AGE_MS);
+          session.sceneState = sceneFromPerception(result, fresh, session.lookAround, hfovDeg);
+          engine.onFrame(result, fresh, nowMs);
           for (const ev of narrator.onScene(result, hfovDeg)) engine.announceScene(ev);
         } catch (err) {
           console.error("perception failed:", err instanceof Error ? err.message : err);

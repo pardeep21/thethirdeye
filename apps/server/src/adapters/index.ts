@@ -2,6 +2,13 @@
 // these interfaces; providers are selected by PROVIDER env (mock-first).
 import type { Box, FaceHit, SceneTriage, TriageResult } from "../protocol.js";
 import type { AgentBrain } from "./agent.js";
+import type { DetectedFace } from "../faces/embed.js";
+
+/** One detection with its stored-person match (null when unknown). */
+export interface MatchedFace {
+  face: DetectedFace;
+  hit: FaceHit | null;
+}
 
 export interface VisionTriage {
   triage(img: Buffer): Promise<TriageResult>;
@@ -24,6 +31,10 @@ export interface SpeechToText {
 
 export interface FaceMatcher {
   match(img: Buffer): Promise<FaceHit[]>;
+  /** Per-face detections with their stored-person match (null when unknown). */
+  matchDetailed(img: Buffer): Promise<MatchedFace[]>;
+  /** One embedding against the store (duplicate checks); null when unknown. */
+  matchEmbedding(embedding: number[]): FaceHit | null;
 } // local
 
 /** VisionTriage plus a display name and last-call usage for eval reports. */

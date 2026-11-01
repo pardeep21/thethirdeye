@@ -5,7 +5,6 @@
 
 import type {
   Denomination,
-  FaceHit,
   Priority,
   SpeakLang,
   TriagePerson,
@@ -34,10 +33,21 @@ export type ScenePhraseItem =
   | { kind: "object"; label: string; clock: number }
   | { kind: "person"; gender?: "man" | "woman"; clock: number };
 
+/**
+ * What the known-person path needs from a face track. Tracks carry
+ * knownPersonId/knownName only when the matcher cleared threshold +
+ * margin, so no score filtering happens here.
+ */
+export interface KnownTrackSight {
+  knownPersonId?: string;
+  knownName?: string;
+  clock: number;
+}
+
 export type DecisionEvent =
   | { kind: "NOTE_SEEN"; denominations: Denomination[]; confidences: number[] }
   | { kind: "NOTE_UNSURE" }
-  | { kind: "KNOWN_ARRIVED"; personId: string; name: string }
+  | { kind: "KNOWN_ARRIVED"; personId: string; name: string; clock?: number }
   | { kind: "PERSON_ARRIVED"; count: number; people: TriagePerson[] }
   | { kind: "SCENE_SUMMARY"; items: ScenePhraseItem[] }
   | { kind: "SCENE_UPDATE"; items: ScenePhraseItem[] }
@@ -125,10 +135,10 @@ export class DecisionEngine {
     private readonly clock: () => number = Date.now
   ) {}
 
-  onFrame(triage: TriageResult, faces: FaceHit[], nowMs: number = this.clock()): DecisionEvent[] {
+  onFrame(triage: TriageResult, tracks: KnownTrackSight[], nowMs: number = this.clock()): DecisionEvent[] {
     const fired: DecisionEvent[] = [];
     this.updateNotes(triage, nowMs, fired);
-    const knownFired = this.updateKnown(faces, nowMs, fired);
+    const knownFired = this.updateKnown(tracks, nowMs, fired);
     this.updatePersonCount(triage, nowMs, fired, knownFired);
     return fired;
   }
@@ -202,11 +212,11 @@ export class DecisionEngine {
     }
   }
 
-  private updateKnown(faces: FaceHit[], nowMs: number, fired: DecisionEvent[]): number {
-    const matched = new Map<string, string>();
-    for (const h of faces) {
-      if (h.personId && h.name && h.score >= FACE_MATCH_THRESHOLD) {
-        if (!matched.has(h.personId)) matched.set(h.personId, h.name);
+  private updateKnown(tracks: KnownTrackSight[], nowMs: number, fired: DecisionEvent[]): number {
+    const matched = new Map<string, { name: string; clock: number }>();
+    for (const t of tracks) {
+      if (t.knownPersonId && t.knownName && !matched.has(t.knownPersonId)) {
+        matched.set(t.knownPersonId, { name: t.knownName, clock: t.clock });
       }
     }
     let count = 0;
@@ -220,10 +230,10 @@ export class DecisionEngine {
       t.window.push(matched.has(id));
       if (t.window.length > 3) t.window.shift();
       const hits = t.window.filter(Boolean).length;
-      const name = matched.get(id);
-      if (!this.muted && name && hits >= 2 && nowMs - t.spokenAt >= KNOWN_SILENCE_MS) {
+      const m = matched.get(id);
+      if (!this.muted && m && hits >= 2 && nowMs - t.spokenAt >= KNOWN_SILENCE_MS) {
         t.spokenAt = nowMs;
-        const ev: DecisionEvent = { kind: "KNOWN_ARRIVED", personId: id, name };
+        const ev: DecisionEvent = { kind: "KNOWN_ARRIVED", personId: id, name: m.name, clock: m.clock };
         this.enqueueP2(ev, nowMs);
         fired.push(ev);
         count++;

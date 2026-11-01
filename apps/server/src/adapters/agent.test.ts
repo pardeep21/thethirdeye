@@ -170,7 +170,7 @@ test("agent cost table prices Spark, null otherwise", () => {
 });
 
 test("system prompt carries the rules, schema and few-shots", () => {
-  assert.equal(AGENT_PROMPT_VERSION, 2);
+  assert.equal(AGENT_PROMPT_VERSION, 3);
   const prompt = buildAgentSystemPrompt({ lang: "pa", script: "gurmukhi" });
   assert.match(prompt, /blind shopkeeper/);
   assert.match(prompt, /15 words/);
@@ -184,6 +184,10 @@ test("system prompt carries the rules, schema and few-shots", () => {
   assert.match(prompt, /Gurmukhi/);
   assert.match(prompt, /ki haal hai/);
   assert.match(prompt, /remember_person/);
+  assert.match(prompt, /S1.*no face track/);
+  assert.match(prompt, /confirm_consent/);
+  assert.match(prompt, /Never grant without his yes/);
+  assert.match(prompt, /forget_person/);
   assert.match(buildAgentSystemPrompt({ lang: "en", script: "latin" }), /Latin\/Roman/);
   assert.match(buildAgentSystemPrompt({ lang: "hi", script: "devanagari" }), /Devanagari/);
 });

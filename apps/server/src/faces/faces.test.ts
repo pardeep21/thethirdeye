@@ -42,6 +42,33 @@ test("store adds, lists and removes people with embeddings only", () => {
   }
 });
 
+test("store records consent and finds people by name", () => {
+  const store = new PeopleStore(":memory:");
+  try {
+    const a = store.addPerson("Ravi", [[1, 0]], { method: "voice", ts: 123, text: "haan" });
+    assert.equal(a.consent_method, "voice");
+    assert.equal(a.consent_ts, 123);
+    assert.equal(a.consent_text, "haan");
+    store.addPerson("Ravina", [[0, 1]], { method: "form" });
+    const listed = store.listPeople().find((p) => p.name === "Ravi");
+    assert.equal(listed?.consent_method, "voice");
+    assert.equal(listed?.consent_text, "haan");
+    // Exact (case-insensitive) wins over substring.
+    assert.deepEqual(
+      store.findByName("ravi").map((p) => p.name),
+      ["Ravi"]
+    );
+    assert.deepEqual(
+      store.findByName("rav").map((p) => p.name),
+      ["Ravi", "Ravina"]
+    );
+    assert.deepEqual(store.findByName("Simran"), []);
+    assert.deepEqual(store.findByName("  "), []);
+  } finally {
+    store.close();
+  }
+});
+
 function goodFace(embedding: number[]): DetectedFace {
   return {
     box: [0, 0, 100, 100],
@@ -141,4 +168,33 @@ test("default threshold suits ArcFace similarities (~0.45)", async () => {
 
 test("stub embedder finds nothing (fail-closed)", async () => {
   assert.deepEqual(await new StubFaceEmbedder().embed(Buffer.alloc(0)), []);
+});
+
+test("store renames a person", () => {
+  const store = new PeopleStore(":memory:");
+  try {
+    const row = store.addPerson("Raj", [[1, 0]]);
+    assert.equal(store.renamePerson(row.id, "  Ravi "), true);
+    assert.equal(store.listPeople()[0]?.name, "Ravi");
+    assert.equal(store.renamePerson(999, "Nobody"), false);
+    assert.throws(() => store.renamePerson(row.id, "  "), /name is required/);
+  } finally {
+    store.close();
+  }
+});
+
+test("matchEmbedding answers one vector without an image", async () => {
+  const store = new PeopleStore(":memory:");
+  try {
+    const person = store.addPerson("Ravi", [[1, 0]]);
+    const m = new StoredFaceMatcher(store, new StubFaceEmbedder());
+    assert.deepEqual(m.matchEmbedding([1, 0]), {
+      personId: String(person.id),
+      name: "Ravi",
+      score: 1,
+    });
+    assert.equal(m.matchEmbedding([0, 1]), null);
+  } finally {
+    store.close();
+  }
 });

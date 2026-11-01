@@ -2,7 +2,7 @@
 // embeddings, return hits above threshold. Unknown faces yield no hits:
 // strangers are described generically, never identified.
 import type { FaceHit } from "../protocol.js";
-import type { FaceMatcher } from "../adapters/index.js";
+import type { FaceMatcher, MatchedFace } from "../adapters/index.js";
 import { FACE_MATCH_MARGIN, FACE_MATCH_THRESHOLD } from "../decision.js";
 import type { FaceEmbedder } from "./embed.js";
 import type { PeopleStore } from "./store.js";
@@ -30,36 +30,46 @@ export class StoredFaceMatcher implements FaceMatcher {
   ) {}
 
   async match(img: Buffer): Promise<FaceHit[]> {
+    const detailed = await this.matchDetailed(img);
+    return detailed.map((d) => d.hit).filter((h): h is FaceHit => h !== null);
+  }
+
+  async matchDetailed(img: Buffer): Promise<MatchedFace[]> {
     const queryFaces = await this.embedder.embed(img);
-    if (queryFaces.length === 0) return [];
+    return queryFaces.map((face) => ({ face, hit: this.matchOne(face.embedding) }));
+  }
+
+  matchEmbedding(embedding: number[]): FaceHit | null {
+    return this.matchOne(embedding);
+  }
+
+  /** One embedding against the store (also used for duplicate checks). */
+  matchOne(embedding: number[]): FaceHit | null {
     const stored = this.store.allEmbeddings();
-    if (stored.length === 0) return [];
-    const hits: FaceHit[] = [];
-    for (const q of queryFaces) {
-      // Best score per enrolled person; the winner must clear the
-      // threshold and the runner-up person by the margin. Comparing
-      // persons (not raw embeddings) keeps a second photo of the same
-      // person from vetoing its own match.
-      const perPerson = new Map<number, StoredHit>();
-      for (const s of stored) {
-        const score = cosine(q.embedding, s.embedding);
-        const prev = perPerson.get(s.personId);
-        if (!prev || score > prev.score) {
-          perPerson.set(s.personId, { personId: String(s.personId), name: s.name, score });
-        }
-      }
-      const ranked = [...perPerson.values()].sort((a, b) => b.score - a.score);
-      const best = ranked[0];
-      const runnerUp = ranked[1];
-      if (
-        best &&
-        best.score >= this.threshold &&
-        (runnerUp === undefined || best.score - runnerUp.score >= this.margin)
-      ) {
-        hits.push(best);
+    if (stored.length === 0) return null;
+    // Best score per enrolled person; the winner must clear the
+    // threshold and the runner-up person by the margin. Comparing
+    // persons (not raw embeddings) keeps a second photo of the same
+    // person from vetoing its own match.
+    const perPerson = new Map<number, StoredHit>();
+    for (const s of stored) {
+      const score = cosine(embedding, s.embedding);
+      const prev = perPerson.get(s.personId);
+      if (!prev || score > prev.score) {
+        perPerson.set(s.personId, { personId: String(s.personId), name: s.name, score });
       }
     }
-    return hits;
+    const ranked = [...perPerson.values()].sort((a, b) => b.score - a.score);
+    const best = ranked[0];
+    const runnerUp = ranked[1];
+    if (
+      best &&
+      best.score >= this.threshold &&
+      (runnerUp === undefined || best.score - runnerUp.score >= this.margin)
+    ) {
+      return best;
+    }
+    return null;
   }
 }
 

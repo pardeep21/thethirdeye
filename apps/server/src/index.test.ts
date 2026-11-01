@@ -471,6 +471,88 @@ test("utterance agent path: capture_now -> frame -> mock agent -> rendered clock
   }
 });
 
+test("voice enrollment over WS: remember -> consent -> saved -> known arrival", async () => {
+  const agent = new MockAgentBrain([
+    { say: null, positions: [], actions: [{ tool: "remember_person", ref: "P1", name: "Ravi" }] },
+    { say: null, positions: [], actions: [{ tool: "confirm_consent", name: "Ravi", granted: true }] },
+  ]);
+  // Distinct notes make the three seed frames observable (one speak each);
+  // capture replies and later frames stay silent.
+  const triage = new MockVisionTriage([
+    { notes: [{ denomination: 500, confidence: 0.9 }], people: [] },
+    { notes: [{ denomination: 100, confidence: 0.9 }], people: [] },
+    { notes: [{ denomination: 50, confidence: 0.9 }], people: [] },
+    { notes: [], people: [] },
+  ]);
+  const t = await startTestServer(new FixedEmbedder([1, 0]), agent, triage);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      for (const want of ["ਪੰਜ ਸੌ ਦਾ ਨੋਟ", "ਸੌ ਦਾ ਨੋਟ", "ਪੰਜਾਹ ਦਾ ਨੋਟ"]) {
+        sendFrame(ws);
+        const raw = await nextMessage(ws);
+        assert.equal((JSON.parse(raw) as { text: string }).text, want);
+      }
+
+      // Turn 1: name the face -> the deterministic consent question speaks.
+      sendUtterance(ws, "eh Ravi hai, yaad rakh");
+      const early = await collectUntil(ws, (m) => m.type === "capture_now", 2000);
+      const cap1 = early.find((m) => m.type === "capture_now") as { reqId: string };
+      sendFrame(ws, { reqId: cap1.reqId });
+      const asked = await collectUntil(
+        ws,
+        (m) => m.type === "speak" && m.kind === "answer",
+        2000
+      );
+      const ask = asked.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(ask?.text, "Ravi nu yaad rakhaan? Haan ya na dasso");
+      assert.equal(agent.inputs.length, 1);
+      assert.equal(agent.inputs[0]?.scene.people[0]?.ref, "P1");
+
+      // Turn 2: "haan" -> enrolled with voice consent, nothing else speaks.
+      sendUtterance(ws, "haan");
+      const early2 = await collectUntil(ws, (m) => m.type === "capture_now", 2000);
+      const cap2 = early2.find((m) => m.type === "capture_now") as { reqId: string };
+      sendFrame(ws, { reqId: cap2.reqId });
+      const saved = await collectUntil(
+        ws,
+        (m) => m.type === "speak" && m.kind === "answer",
+        2000
+      );
+      const savedSpeak = saved.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(savedSpeak?.text, "Ravi yaad ho gaya");
+      // The agent's history carries the consent question, so "haan" resolves.
+      assert.ok(
+        agent.inputs[1]?.history.some(
+          (h) => h.role === "assistant" && h.text === "Ravi nu yaad rakhaan? Haan ya na dasso"
+        )
+      );
+
+      const listed = (await (await fetch(`http://127.0.0.1:${t.port}/people`)).json()) as Array<{
+        name: string;
+        consent_method: string;
+        consent_text: string;
+      }>;
+      assert.equal(listed.length, 1);
+      assert.equal(listed[0].name, "Ravi");
+      assert.equal(listed[0].consent_method, "voice");
+      assert.equal(listed[0].consent_text, "haan");
+
+      // Two more frames: the enrolled face is recognised (2-of-3) with a clock.
+      sendFrame(ws);
+      sendFrame(ws);
+      const known = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "people", 2000);
+      const arrival = known.find((m) => m.type === "speak" && m.kind === "people");
+      assert.equal(arrival?.text, "Ravi ਆ ਗਿਆ, 11 o'clock");
+      assert.equal(arrival?.priority, "P2");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
 test("capture_now timeout falls back to the last frame, then to no image", async () => {
   process.env.CAPTURE_TIMEOUT_MS = "50";
   const agent = new MockAgentBrain();

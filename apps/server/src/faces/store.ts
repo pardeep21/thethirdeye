@@ -7,6 +7,17 @@ export interface PersonRow {
   name: string;
   faces: number;
   enrolledAt: string;
+  consent_method: string | null;
+  consent_ts: number | null;
+  consent_text: string | null;
+}
+
+export interface PersonConsent {
+  /** How consent was recorded: "form" (helper) or "voice" (live enrollment). */
+  method: string;
+  ts?: number;
+  /** The consent transcript for voice enrollments. */
+  text?: string;
 }
 
 export interface StoredEmbedding {
@@ -25,7 +36,10 @@ export class PeopleStore {
       CREATE TABLE IF NOT EXISTS people (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        consent_method TEXT,
+        consent_ts INTEGER,
+        consent_text TEXT
       );
       CREATE TABLE IF NOT EXISTS embeddings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,21 +49,70 @@ export class PeopleStore {
       );
       CREATE INDEX IF NOT EXISTS idx_embeddings_person ON embeddings(person_id);
     `);
+    // Migrate pre-consent databases (SQLite has no ADD COLUMN IF NOT EXISTS).
+    const cols = new Set(
+      (this.db.prepare("PRAGMA table_info(people)").all() as Array<{ name: string }>).map(
+        (c) => c.name
+      )
+    );
+    if (!cols.has("consent_method")) this.db.exec("ALTER TABLE people ADD COLUMN consent_method TEXT");
+    if (!cols.has("consent_ts")) this.db.exec("ALTER TABLE people ADD COLUMN consent_ts INTEGER");
+    if (!cols.has("consent_text")) this.db.exec("ALTER TABLE people ADD COLUMN consent_text TEXT");
   }
 
-  addPerson(name: string, embeddings: number[][]): PersonRow {
+  addPerson(name: string, embeddings: number[][], consent?: PersonConsent): PersonRow {
     const clean = name.trim();
     if (!clean) throw new Error("name is required");
     if (embeddings.length === 0) throw new Error("at least one embedding is required");
-    const insertPerson = this.db.prepare("INSERT INTO people (name) VALUES (?)");
+    const insertPerson = this.db.prepare(
+      "INSERT INTO people (name, consent_method, consent_ts, consent_text) VALUES (?, ?, ?, ?)"
+    );
     const insertEmb = this.db.prepare("INSERT INTO embeddings (person_id, embedding) VALUES (?, ?)");
     const tx = this.db.transaction((n: string, embs: number[][]): number => {
-      const row = insertPerson.run(n);
+      const row = insertPerson.run(n, consent?.method ?? null, consent?.ts ?? null, consent?.text ?? null);
       for (const e of embs) insertEmb.run(row.lastInsertRowid, JSON.stringify(e));
       return Number(row.lastInsertRowid);
     });
     const id = tx(clean, embeddings);
-    return { id, name: clean, faces: embeddings.length, enrolledAt: new Date().toISOString() };
+    return {
+      id,
+      name: clean,
+      faces: embeddings.length,
+      enrolledAt: new Date().toISOString(),
+      consent_method: consent?.method ?? null,
+      consent_ts: consent?.ts ?? null,
+      consent_text: consent?.text ?? null,
+    };
+  }
+
+  /** Case-insensitive exact matches, else substring matches (for "bhul ja" ambiguity). */
+  findByName(name: string): PersonRow[] {
+    const q = name.trim().toLowerCase();
+    if (!q) return [];
+    const exact = this.db
+      .prepare(
+        `SELECT p.id AS id, p.name AS name, COUNT(e.id) AS faces, p.created_at AS enrolledAt,
+                p.consent_method AS consent_method, p.consent_ts AS consent_ts, p.consent_text AS consent_text
+         FROM people p LEFT JOIN embeddings e ON e.person_id = p.id
+         WHERE lower(p.name) = ? GROUP BY p.id ORDER BY p.id`
+      )
+      .all(q) as PersonRow[];
+    if (exact.length > 0) return exact;
+    const like = q.replace(/[%_]/g, (c) => `\\${c}`);
+    return this.db
+      .prepare(
+        `SELECT p.id AS id, p.name AS name, COUNT(e.id) AS faces, p.created_at AS enrolledAt,
+                p.consent_method AS consent_method, p.consent_ts AS consent_ts, p.consent_text AS consent_text
+         FROM people p LEFT JOIN embeddings e ON e.person_id = p.id
+         WHERE lower(p.name) LIKE ? ESCAPE '\\' GROUP BY p.id ORDER BY p.id`
+      )
+      .all(`%${like}%`) as PersonRow[];
+  }
+
+  renamePerson(id: number, name: string): boolean {
+    const clean = name.trim();
+    if (!clean) throw new Error("name is required");
+    return this.db.prepare("UPDATE people SET name = ? WHERE id = ?").run(clean, id).changes > 0;
   }
 
   removePerson(id: number): boolean {
@@ -63,7 +126,8 @@ export class PeopleStore {
   listPeople(): PersonRow[] {
     return this.db
       .prepare(
-        `SELECT p.id AS id, p.name AS name, COUNT(e.id) AS faces, p.created_at AS enrolledAt
+        `SELECT p.id AS id, p.name AS name, COUNT(e.id) AS faces, p.created_at AS enrolledAt,
+                p.consent_method AS consent_method, p.consent_ts AS consent_ts, p.consent_text AS consent_text
          FROM people p LEFT JOIN embeddings e ON e.person_id = p.id
          GROUP BY p.id ORDER BY p.id`
       )

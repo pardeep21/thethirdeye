@@ -27,7 +27,7 @@ test("session defaults: pa, gurmukhi, idle", () => {
   assert.deepEqual(s.sceneState, { people: [], recentNotes: [], lookAround: false, objects: [] });
 });
 
-test("sceneFromPerception maps people, clocks and known names", () => {
+test("sceneFromPerception maps tracks with Spark attrs and known names", () => {
   const scene = sceneFromPerception(
     {
       notes: [{ denomination: 500, confidence: 0.9 }],
@@ -37,8 +37,26 @@ test("sceneFromPerception maps people, clocks and known names", () => {
       ],
     },
     [
-      { personId: "1", name: "Ravi", score: 0.9 },
-      { personId: null, name: null, score: 0.1 },
+      {
+        ref: "P1",
+        lastBoxNorm: [0.1, 0.2, 0.2, 0.3],
+        clock: 10,
+        firstSeen: 0,
+        lastSeen: 0,
+        knownPersonId: "1",
+        knownName: "Ravi",
+        matchedThisFrame: true,
+        samples: [],
+      },
+      {
+        ref: "P2",
+        lastBoxNorm: [0.7, 0.2, 0.1, 0.2],
+        clock: 2,
+        firstSeen: 0,
+        lastSeen: 0,
+        matchedThisFrame: true,
+        samples: [],
+      },
     ],
     false,
     100
@@ -50,11 +68,27 @@ test("sceneFromPerception maps people, clocks and known names", () => {
     distance: "near",
     desc: "man around 30s",
     knownName: "Ravi",
+    gender: "man",
   });
   assert.deepEqual(scene.people[1], { ref: "P2", clock: 2, distance: "far", desc: "person" });
   assert.deepEqual(scene.recentNotes, ["500 (conf 0.9)"]);
   assert.equal(scene.lookAround, false);
   assert.deepEqual(scene.objects, []);
+});
+
+test("sceneFromPerception falls back to S-refs without tracks", () => {
+  const scene = sceneFromPerception(
+    {
+      notes: [],
+      people: [{ position: "left", distance: "near", gender: "man", age_range: "30s" }],
+    },
+    [],
+    false,
+    100
+  );
+  assert.deepEqual(scene.people, [
+    { ref: "S1", clock: 10, distance: "near", desc: "man around 30s", gender: "man" },
+  ]);
 });
 
 test("sceneFromPerception stays silent-safe on empty input", () => {
@@ -70,6 +104,7 @@ test("sceneFromPerception renders clocks from x and carries objects", () => {
   };
   const scene = sceneFromPerception(triage, [], true, 100);
   assert.equal(scene.people[0]?.clock, 1);
+  assert.equal(scene.people[0]?.ref, "S1");
   assert.deepEqual(scene.objects, [{ label: "darwaza", clock: 1, distance: "mid" }]);
   assert.equal(scene.lookAround, true);
 });
