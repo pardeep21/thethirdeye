@@ -19,7 +19,14 @@ export const PERSON_SILENCE_MS = 2 * 60 * 1000;
 export const PERSON_MIN_GAP_MS = 30 * 1000;
 export const P2_MAX_AGE_MS = 5000;
 export const P3_MAX_AGE_MS = 3000;
-export const FACE_MATCH_THRESHOLD = 0.75;
+/**
+ * Cosine-similarity match threshold. 0.75 was a pre-ArcFace guess; ArcFace
+ * same-person pairs typically score ~0.4-0.7, so the default is 0.45 until
+ * the photo-set calibration (apps/faces/calibrate.py) pins it.
+ */
+export const FACE_MATCH_THRESHOLD = 0.45;
+/** A match must also clear the runner-up enrolled person by this margin. */
+export const FACE_MATCH_MARGIN = 0.08;
 export const P1_QUEUE_MAX = 10;
 
 /** One spoken item in a look-around summary or update (clock pre-rendered). */

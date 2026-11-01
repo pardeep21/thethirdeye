@@ -1,11 +1,11 @@
-// Faces tests: SQLite store (:memory:), cosine matcher with a fake embedder,
-// backend selection. The human backend itself is NOT loaded here (model
-// downloads); it is smoke-tested manually, see docs/PROGRESS.md M5.
+// Faces tests: SQLite store (:memory:), cosine matcher with a fake embedder.
+// The Python sidecar is exercised through a fake HTTP server in http.test.ts
+// (no Python in CI); the live sidecar is smoke-tested manually.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PeopleStore } from "./store.js";
 import { StoredFaceMatcher, cosine } from "./matcher.js";
-import { StubFaceEmbedder, type FaceEmbedder } from "./embed.js";
+import { StubFaceEmbedder, type DetectedFace, type FaceEmbedder } from "./embed.js";
 
 test("cosine similarity", () => {
   assert.equal(cosine([1, 0], [1, 0]), 1);
@@ -42,24 +42,38 @@ test("store adds, lists and removes people with embeddings only", () => {
   }
 });
 
+function goodFace(embedding: number[]): DetectedFace {
+  return {
+    box: [0, 0, 100, 100],
+    boxNorm: [0, 0, 0.5, 0.5],
+    score: 0.9,
+    quality: { blur: 200, yawDeg: 0, sizePx: 100 },
+    embedding,
+  };
+}
+
 class FakeEmbedder implements FaceEmbedder {
-  constructor(private readonly faces: Array<{ embedding: number[]; score: number }>) {}
-  async embed(_jpeg: Buffer): Promise<Array<{ embedding: number[]; score: number }>> {
-    return this.faces.map((f) => ({ ...f, embedding: [...f.embedding] }));
+  constructor(private readonly faces: DetectedFace[]) {}
+  async embed(_jpeg: Buffer): Promise<DetectedFace[]> {
+    return structuredClone(this.faces);
   }
+}
+
+function fakeVecs(...embeddings: number[][]): FakeEmbedder {
+  return new FakeEmbedder(embeddings.map(goodFace));
 }
 
 test("matcher hits above threshold, misses below, empty without faces", async () => {
   const store = new PeopleStore(":memory:");
   try {
     const person = store.addPerson("Ravi", [[1, 0]]);
-    const hit = new StoredFaceMatcher(store, new FakeEmbedder([{ embedding: [1, 0], score: 0.9 }]), 0.75);
+    const hit = new StoredFaceMatcher(store, fakeVecs([1, 0]), 0.75);
     assert.deepEqual(await hit.match(Buffer.alloc(0)), [
       { personId: String(person.id), name: "Ravi", score: 1 },
     ]);
-    const miss = new StoredFaceMatcher(store, new FakeEmbedder([{ embedding: [0, 1], score: 0.9 }]), 0.75);
+    const miss = new StoredFaceMatcher(store, fakeVecs([0, 1]), 0.75);
     assert.deepEqual(await miss.match(Buffer.alloc(0)), []);
-    const noFace = new StoredFaceMatcher(store, new FakeEmbedder([]), 0.75);
+    const noFace = new StoredFaceMatcher(store, fakeVecs(), 0.75);
     assert.deepEqual(await noFace.match(Buffer.alloc(0)), []);
   } finally {
     store.close();
@@ -71,11 +85,55 @@ test("matcher picks the best person per query face", async () => {
   try {
     const a = store.addPerson("Ravi", [[1, 0]]);
     store.addPerson("Simran", [[0, 1]]);
-    const m = new StoredFaceMatcher(store, new FakeEmbedder([{ embedding: [0.9, 0.1], score: 0.9 }]), 0.5);
+    const m = new StoredFaceMatcher(store, fakeVecs([0.9, 0.1]), 0.5);
     const hits = await m.match(Buffer.alloc(0));
     assert.equal(hits.length, 1);
     assert.equal(hits[0].personId, String(a.id));
     assert.ok(hits[0].score > 0.9);
+  } finally {
+    store.close();
+  }
+});
+
+test("matcher requires the margin over the runner-up person", async () => {
+  const store = new PeopleStore(":memory:");
+  try {
+    store.addPerson("Ravi", [[1, 0]]);
+    store.addPerson("Simran", [[0.99, 0.1411]]);
+    // Best ~0.9988, runner-up ~0.9958: gap < 0.08, so no hit (fail-closed).
+    const close = new StoredFaceMatcher(store, fakeVecs([1, 0.05]), 0.45, 0.08);
+    assert.deepEqual(await close.match(Buffer.alloc(0)), []);
+    const relaxed = new StoredFaceMatcher(store, fakeVecs([1, 0.05]), 0.45, 0.001);
+    assert.equal((await relaxed.match(Buffer.alloc(0))).length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test("a second photo of the same person never vetoes its own match", async () => {
+  const store = new PeopleStore(":memory:");
+  try {
+    const person = store.addPerson("Ravi", [
+      [1, 0],
+      [0.99, 0.1411],
+    ]);
+    const m = new StoredFaceMatcher(store, fakeVecs([1, 0.05]), 0.45, 0.08);
+    const hits = await m.match(Buffer.alloc(0));
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].personId, String(person.id));
+  } finally {
+    store.close();
+  }
+});
+
+test("default threshold suits ArcFace similarities (~0.45)", async () => {
+  const store = new PeopleStore(":memory:");
+  try {
+    store.addPerson("Ravi", [[1, 0]]);
+    const hit = new StoredFaceMatcher(store, fakeVecs([0.5, 0.866]));
+    assert.equal((await hit.match(Buffer.alloc(0))).length, 1);
+    const miss = new StoredFaceMatcher(store, fakeVecs([0.4, 0.9165]));
+    assert.deepEqual(await miss.match(Buffer.alloc(0)), []);
   } finally {
     store.close();
   }

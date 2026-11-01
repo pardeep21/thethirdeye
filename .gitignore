@@ -9,3 +9,6 @@ coverage/
 *.db-shm
 apps/eval/debug/
 docs/
+apps/faces/.venv/
+__pycache__/
+*.pyc

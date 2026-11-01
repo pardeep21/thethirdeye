@@ -12,12 +12,20 @@ import { MockVisionTriage } from "./adapters/mocks.js";
 import type { NamedTriage } from "./adapters/index.js";
 import type { SceneTriage } from "./protocol.js";
 import { PeopleStore } from "./faces/store.js";
-import type { FaceEmbedder } from "./faces/embed.js";
+import type { DetectedFace, FaceEmbedder } from "./faces/embed.js";
 
 class FixedEmbedder implements FaceEmbedder {
   constructor(private readonly embedding: number[]) {}
-  async embed(_jpeg: Buffer): Promise<Array<{ embedding: number[]; score: number }>> {
-    return [{ embedding: [...this.embedding], score: 0.95 }];
+  async embed(_jpeg: Buffer): Promise<DetectedFace[]> {
+    return [
+      {
+        box: [0, 0, 100, 100],
+        boxNorm: [0, 0, 0.5, 0.5],
+        score: 0.95,
+        quality: { blur: 200, yawDeg: 0, sizePx: 100 },
+        embedding: [...this.embedding],
+      },
+    ];
   }
 }
 
@@ -30,6 +38,8 @@ async function startTestServer(
   done: () => Promise<void>;
 }> {
   process.env.PROVIDER = "mock";
+  // Stub faces for determinism: a running sidecar must not change test behaviour.
+  process.env.FACES = "stub";
   const store = new PeopleStore(":memory:");
   const server = await startServer(0, { store, embedder, agent, triage });
   return {

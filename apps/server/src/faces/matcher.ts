@@ -3,7 +3,7 @@
 // strangers are described generically, never identified.
 import type { FaceHit } from "../protocol.js";
 import type { FaceMatcher } from "../adapters/index.js";
-import { FACE_MATCH_THRESHOLD } from "../decision.js";
+import { FACE_MATCH_MARGIN, FACE_MATCH_THRESHOLD } from "../decision.js";
 import type { FaceEmbedder } from "./embed.js";
 import type { PeopleStore } from "./store.js";
 
@@ -25,7 +25,8 @@ export class StoredFaceMatcher implements FaceMatcher {
   constructor(
     private readonly store: PeopleStore,
     private readonly embedder: FaceEmbedder,
-    private readonly threshold: number = FACE_MATCH_THRESHOLD
+    private readonly threshold: number = FACE_MATCH_THRESHOLD,
+    private readonly margin: number = FACE_MATCH_MARGIN
   ) {}
 
   async match(img: Buffer): Promise<FaceHit[]> {
@@ -35,14 +36,28 @@ export class StoredFaceMatcher implements FaceMatcher {
     if (stored.length === 0) return [];
     const hits: FaceHit[] = [];
     for (const q of queryFaces) {
-      let best: StoredHit | null = null;
+      // Best score per enrolled person; the winner must clear the
+      // threshold and the runner-up person by the margin. Comparing
+      // persons (not raw embeddings) keeps a second photo of the same
+      // person from vetoing its own match.
+      const perPerson = new Map<number, StoredHit>();
       for (const s of stored) {
         const score = cosine(q.embedding, s.embedding);
-        if (!best || score > best.score) {
-          best = { personId: String(s.personId), name: s.name, score };
+        const prev = perPerson.get(s.personId);
+        if (!prev || score > prev.score) {
+          perPerson.set(s.personId, { personId: String(s.personId), name: s.name, score });
         }
       }
-      if (best && best.score >= this.threshold) hits.push(best);
+      const ranked = [...perPerson.values()].sort((a, b) => b.score - a.score);
+      const best = ranked[0];
+      const runnerUp = ranked[1];
+      if (
+        best &&
+        best.score >= this.threshold &&
+        (runnerUp === undefined || best.score - runnerUp.score >= this.margin)
+      ) {
+        hits.push(best);
+      }
     }
     return hits;
   }

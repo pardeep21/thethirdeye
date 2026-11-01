@@ -157,7 +157,7 @@ test("different enrolled people fire independently", () => {
 test("below-threshold face scores never fire", () => {
   const { eng } = makeEngine();
   for (const t of [0, 500, 1000, 1500]) {
-    assert.deepEqual(kinds(eng.onFrame(EMPTY, hits("p1", "Ravi", 0.5), t)), [], `t=${t}`);
+    assert.deepEqual(kinds(eng.onFrame(EMPTY, hits("p1", "Ravi", 0.3), t)), [], `t=${t}`);
   }
 });
 

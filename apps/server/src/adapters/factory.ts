@@ -18,6 +18,7 @@ import {
   MockVisionTriage,
 } from "./mocks.js";
 import { createFaceMatcher } from "../faces/index.js";
+import type { FaceEmbedder } from "../faces/embed.js";
 import type { AgentBrain } from "./agent.js";
 import {
   agentDebugDirFromEnv,
@@ -40,6 +41,8 @@ function needEnv(name: string): string {
 
 export interface AdapterDeps {
   store?: PeopleStore;
+  /** Face embedder for recognition (default: the fail-closed stub). */
+  embedder?: FaceEmbedder;
   /** When set, OpenAI-compat triage writes raw request/response logs here. */
   debugDir?: string;
 }
@@ -98,7 +101,7 @@ export function createAdapters(
 ): AdapterSet {
   // Faces are always store-backed (even for mock) so enrollment works in
   // every mode; without an explicit store the data is memory-only.
-  const faces = createFaceMatcher(deps?.store ?? new PeopleStore(":memory:"));
+  const faces = createFaceMatcher(deps?.store ?? new PeopleStore(":memory:"), deps?.embedder);
   const agent = createAgentBrain(provider, deps);
   const mocks = {
     finder: new MockObjectFinder(),

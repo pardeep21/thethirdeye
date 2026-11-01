@@ -39,8 +39,9 @@ import { UtteranceStats } from "./stats.js";
 import { routeIntent } from "./intent.js";
 import type { FaceHit, TriageResult } from "./protocol.js";
 import { PeopleStore } from "./faces/store.js";
-import { StubFaceEmbedder, type FaceEmbedder } from "./faces/embed.js";
-import { defaultDbPath } from "./faces/index.js";
+import type { FaceEmbedder } from "./faces/embed.js";
+import { checkEnrollFace } from "./faces/quality.js";
+import { defaultDbPath, facesEveryNFromEnv, selectEmbedder, shouldRunFaces } from "./faces/index.js";
 
 export interface ServerHandles {
   port: number;
@@ -115,8 +116,9 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
   const provider = providerFromEnv();
   const ownStore = !opts?.store;
   const people = opts?.store ?? new PeopleStore(defaultDbPath());
-  const embedder = opts?.embedder ?? new StubFaceEmbedder();
-  const adapters = createAdapters(provider, { store: people });
+  const embedder = opts?.embedder ?? (await selectEmbedder());
+  const adapters = createAdapters(provider, { store: people, embedder });
+  const facesEveryN = facesEveryNFromEnv();
   const agent = opts?.agent ?? adapters.agent;
   const triage = opts?.triage ?? adapters.triage;
   const frames = new LatestFrameStore();
@@ -147,10 +149,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       } catch (err) {
         return { status: 500, json: { error: `face embedding failed: ${err instanceof Error ? err.message : err}` } };
       }
-      if (faces.length === 0) {
-        return { status: 400, json: { error: `no face found in photo ${i + 1}; please retake it` } };
+      const checked = checkEnrollFace(faces, i + 1);
+      if ("error" in checked) {
+        return { status: 400, json: { error: checked.error } };
       }
-      embeddings.push(faces[0].embedding);
+      embeddings.push(checked.face.embedding);
     }
     return { status: 201, json: people.addPerson(rec.name as string, embeddings) };
   }
@@ -211,6 +214,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     const narrator = new SceneNarrator();
     let lastPerception: { triage: TriageResult; faces: FaceHit[] } | null = null;
     const pendingCaptures = new Map<string, (f: SessionFrame) => void>();
+    let frameNo = 0;
 
     const send = (msg: DownMessage): void => {
       if (ws.readyState !== WebSocket.OPEN) return;
@@ -529,9 +533,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         try {
           // Look-around frames take the scene prompt (cash + people with
           // coordinates + objects); otherwise the fast cash-only prompt.
+          // Faces run every Nth frame (FACES_EVERY_N; slow machines skip).
+          const runFaces = shouldRunFaces(frameNo++, facesEveryN);
           const [result, hits] = await Promise.all([
             session.lookAround ? triage.triageScene(jpeg) : triage.triage(jpeg),
-            adapters.faces.match(jpeg),
+            runFaces ? adapters.faces.match(jpeg) : Promise.resolve([] as FaceHit[]),
           ]);
           lastPerception = { triage: result, faces: hits };
           session.sceneState = sceneFromPerception(result, hits, session.lookAround, hfovDeg);
