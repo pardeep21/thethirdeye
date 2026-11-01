@@ -7,7 +7,7 @@ import type {
   ProviderName,
 } from "./index.js";
 import { providerFromEnv } from "./index.js";
-import { triageMaxTokensFromEnv } from "./openaiCompat.js";
+import { sceneMaxTokensFromEnv, triageMaxTokensFromEnv } from "./openaiCompat.js";
 
 export { providerFromEnv };
 export type * from "./index.js";
@@ -116,6 +116,7 @@ export function createAdapters(
           model: process.env.META_MODEL ?? "muse-spark-1.3",
           apiKey: needEnv("META_API_KEY"),
           maxTokens: triageMaxTokensFromEnv(),
+          sceneMaxTokens: sceneMaxTokensFromEnv(),
           reasoningEffort: metaReasoningEffortFromEnv(),
           debugDir: deps?.debugDir,
         }),
@@ -133,6 +134,7 @@ export function createAdapters(
           model: process.env.OPENROUTER_MODEL ?? "meta/muse-spark-1.3",
           apiKey: needEnv("OPENROUTER_API_KEY"),
           maxTokens: triageMaxTokensFromEnv(),
+          sceneMaxTokens: sceneMaxTokensFromEnv(),
           debugDir: deps?.debugDir,
         }),
         answer: new OpenAICompatAnswer({
@@ -149,7 +151,14 @@ export function createAdapters(
       const model = process.env.OPENAI_MODEL ?? (provider === "local" ? "muse-glimmer" : "gpt-4o-mini");
       const apiKey = process.env.OPENAI_API_KEY ?? (provider === "local" ? "ollama" : needEnv("OPENAI_API_KEY"));
       return {
-        triage: new OpenAICompatTriage({ baseURL, model, apiKey, maxTokens: triageMaxTokensFromEnv(), debugDir: deps?.debugDir }),
+        triage: new OpenAICompatTriage({
+          baseURL,
+          model,
+          apiKey,
+          maxTokens: triageMaxTokensFromEnv(),
+          sceneMaxTokens: sceneMaxTokensFromEnv(),
+          debugDir: deps?.debugDir,
+        }),
         answer: new OpenAICompatAnswer({ baseURL, model, apiKey }),
         ...mocks,
       };

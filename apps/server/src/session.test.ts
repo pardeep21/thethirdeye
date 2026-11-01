@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { HISTORY_MAX_TURNS, Session, sceneFromPerception } from "./session.js";
+import type { SceneTriage } from "./protocol.js";
 import { UtteranceStats } from "./stats.js";
 
 test("history keeps the last 10 turns", () => {
@@ -23,7 +24,7 @@ test("session defaults: pa, gurmukhi, idle", () => {
   assert.equal(s.muted, false);
   assert.equal(s.agentBusy, false);
   assert.equal(s.lastFrame, null);
-  assert.deepEqual(s.sceneState, { people: [], recentNotes: [], lookAround: false });
+  assert.deepEqual(s.sceneState, { people: [], recentNotes: [], lookAround: false, objects: [] });
 });
 
 test("sceneFromPerception maps people, clocks and known names", () => {
@@ -39,7 +40,8 @@ test("sceneFromPerception maps people, clocks and known names", () => {
       { personId: "1", name: "Ravi", score: 0.9 },
       { personId: null, name: null, score: 0.1 },
     ],
-    false
+    false,
+    100
   );
   assert.equal(scene.people.length, 2);
   assert.deepEqual(scene.people[0], {
@@ -52,11 +54,24 @@ test("sceneFromPerception maps people, clocks and known names", () => {
   assert.deepEqual(scene.people[1], { ref: "P2", clock: 2, distance: "far", desc: "person" });
   assert.deepEqual(scene.recentNotes, ["500 (conf 0.9)"]);
   assert.equal(scene.lookAround, false);
+  assert.deepEqual(scene.objects, []);
 });
 
 test("sceneFromPerception stays silent-safe on empty input", () => {
-  const scene = sceneFromPerception({ notes: [], people: [] }, [], true);
-  assert.deepEqual(scene, { people: [], recentNotes: [], lookAround: true });
+  const scene = sceneFromPerception({ notes: [], people: [] }, [], true, 100);
+  assert.deepEqual(scene, { people: [], recentNotes: [], lookAround: true, objects: [] });
+});
+
+test("sceneFromPerception renders clocks from x and carries objects", () => {
+  const triage: SceneTriage = {
+    notes: [],
+    people: [{ position: "centre", distance: "near", gender: "woman", x: 0.8, y: 0.4 }],
+    objects: [{ label: "darwaza", x: 0.8, y: 0.5, distance: "mid", salience: 3 }],
+  };
+  const scene = sceneFromPerception(triage, [], true, 100);
+  assert.equal(scene.people[0]?.clock, 1);
+  assert.deepEqual(scene.objects, [{ label: "darwaza", clock: 1, distance: "mid" }]);
+  assert.equal(scene.lookAround, true);
 });
 
 test("stats snapshot percentiles over samples", () => {

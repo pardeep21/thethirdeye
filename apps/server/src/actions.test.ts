@@ -36,6 +36,15 @@ test("look_around toggles the session and pushes state", async () => {
   assert.equal(ctx.session.lookAround, false);
 });
 
+test("look_around drives the narrator when one is attached", async () => {
+  const ctx = makeCtx();
+  const states: boolean[] = [];
+  ctx.narrator = { setActive: (on: boolean) => states.push(on) };
+  await applyAgentActions([{ tool: "look_around", on: true }], ctx);
+  await applyAgentActions([{ tool: "look_around", on: false }], ctx);
+  assert.deepEqual(states, [true, false]);
+});
+
 test("mute toggles the engine and the session, and pushes state", async () => {
   const ctx = makeCtx();
   await applyAgentActions([{ tool: "mute", on: true }], ctx);

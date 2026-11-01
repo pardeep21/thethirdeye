@@ -1,6 +1,6 @@
 // Mock providers: fixed answers until a real key works (MVP.md section 0).
 // MockVisionTriage takes a script so tests and demos can drive sequences.
-import type { Box, FaceHit, TriageResult } from "../protocol.js";
+import type { Box, FaceHit, SceneTriage, TriageResult } from "../protocol.js";
 import type {
   FaceMatcher,
   NamedTriage,
@@ -14,15 +14,31 @@ export const DEFAULT_MOCK_TRIAGE: TriageResult = {
   people: [],
 };
 
+export const DEFAULT_MOCK_SCENE: SceneTriage = {
+  notes: [{ denomination: 500, confidence: 0.9 }],
+  people: [],
+  objects: [{ label: "kursi", x: 0.5, y: 0.6, distance: "mid", salience: 2 }],
+};
+
 export class MockVisionTriage implements NamedTriage {
   readonly name = "mock";
   private i = 0;
+  private si = 0;
 
-  constructor(private readonly script: TriageResult[] = [DEFAULT_MOCK_TRIAGE]) {}
+  constructor(
+    private readonly script: TriageResult[] = [DEFAULT_MOCK_TRIAGE],
+    private readonly sceneScript: SceneTriage[] = [DEFAULT_MOCK_SCENE]
+  ) {}
 
   async triage(_img: Buffer): Promise<TriageResult> {
     const r = this.script[this.i % this.script.length] ?? DEFAULT_MOCK_TRIAGE;
     this.i++;
+    return structuredClone(r);
+  }
+
+  async triageScene(_img: Buffer): Promise<SceneTriage> {
+    const r = this.sceneScript[this.si % this.sceneScript.length] ?? DEFAULT_MOCK_SCENE;
+    this.si++;
     return structuredClone(r);
   }
 

@@ -264,7 +264,30 @@ export interface TriagePerson {
   gender?: "man" | "woman";
   age_range?: string;
   action?: string;
+  /** Normalised 0..1 from the image's top-left (scene triage only). */
+  x?: number;
+  y?: number;
 }
+
+/** One salient thing in a look-around scene result. */
+export interface SceneObject {
+  /** Short noun in the user's code-mix ("thaila", "phone", "kursi"). */
+  label: string;
+  /** Normalised 0..1 from the image's top-left. */
+  x: number;
+  y: number;
+  distance: "near" | "mid" | "far";
+  /**
+   * 3 = useful for a blind person (doors, steps, obstacles, counter
+   * things, bags), 1 = background clutter. Max 8 per result.
+   */
+  salience: 1 | 2 | 3;
+}
+
+/** Look-around triage: cash + people (with coordinates) + scene objects. */
+export type SceneTriage = TriageResult & {
+  objects: SceneObject[];
+};
 
 export type TriageResult = {
   notes: TriageNote[];

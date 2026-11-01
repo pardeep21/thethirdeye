@@ -170,7 +170,7 @@ test("agent cost table prices Spark, null otherwise", () => {
 });
 
 test("system prompt carries the rules, schema and few-shots", () => {
-  assert.equal(AGENT_PROMPT_VERSION, 1);
+  assert.equal(AGENT_PROMPT_VERSION, 2);
   const prompt = buildAgentSystemPrompt({ lang: "pa", script: "gurmukhi" });
   assert.match(prompt, /blind shopkeeper/);
   assert.match(prompt, /15 words/);
@@ -196,13 +196,16 @@ test("scene block renders people, notes and look-around state", () => {
     ],
     recentNotes: ["500 (conf 0.9)"],
     lookAround: true,
+    objects: [{ label: "kursi", clock: 12, distance: "mid" }],
   };
   const block = buildSceneBlock(scene);
   assert.match(block, /look-around: on/);
   assert.match(block, /P1: man around 30s at 10 o'clock, near/);
   assert.match(block, /P2: woman at 2 o'clock, far \(known: Ravi\)/);
   assert.match(block, /Recent notes: 500 \(conf 0\.9\)/);
+  assert.match(block, /Objects in view: kursi at 12 o'clock, mid/);
   assert.match(buildSceneBlock(emptyScene()), /People in view: none/);
+  assert.match(buildSceneBlock(emptyScene()), /Objects in view: none/);
 });
 
 interface FakeClient {

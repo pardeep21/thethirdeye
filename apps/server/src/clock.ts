@@ -2,7 +2,11 @@
 // hours itself. It returns normalised x/y coordinates and the server
 // renders the words deterministically from the camera's field of view.
 import type { SpeakLang } from "./protocol.js";
-import { renderClock } from "./phrases.js";
+
+/** Clock position words. Code-mix keeps "o'clock" (DEV-PLAN section 2). */
+export function renderClock(hour: number, _lang: SpeakLang = "pa"): string {
+  return `${hour} o'clock`;
+}
 
 export type PositionDistance = "near" | "mid" | "far";
 

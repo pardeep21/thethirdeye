@@ -1,12 +1,16 @@
 // Integration: frame in over WS -> mock triage -> speak out;
 // audio in -> mock STT -> intent -> answer out; utterance in -> fast path
-// or mock agent (capture_now round trip) -> speak out; REST enrollment.
+// or mock agent (capture_now round trip) -> speak out; REST enrollment;
+// mode on -> scene summary -> silence -> new-person clock line.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WebSocket } from "ws";
 import { startServer } from "./index.js";
 import { MockAgentBrain } from "./adapters/agent.js";
 import type { AgentBrain } from "./adapters/agent.js";
+import { MockVisionTriage } from "./adapters/mocks.js";
+import type { NamedTriage } from "./adapters/index.js";
+import type { SceneTriage } from "./protocol.js";
 import { PeopleStore } from "./faces/store.js";
 import type { FaceEmbedder } from "./faces/embed.js";
 
@@ -17,13 +21,17 @@ class FixedEmbedder implements FaceEmbedder {
   }
 }
 
-async function startTestServer(embedder?: FaceEmbedder, agent?: AgentBrain): Promise<{
+async function startTestServer(
+  embedder?: FaceEmbedder,
+  agent?: AgentBrain,
+  triage?: NamedTriage
+): Promise<{
   port: number;
   done: () => Promise<void>;
 }> {
   process.env.PROVIDER = "mock";
   const store = new PeopleStore(":memory:");
-  const server = await startServer(0, { store, embedder, agent });
+  const server = await startServer(0, { store, embedder, agent, triage });
   return {
     port: server.port,
     done: async () => {
@@ -112,6 +120,14 @@ function sendAudio(ws: WebSocket): void {
 
 function sendUtterance(ws: WebSocket, text: string): void {
   ws.send(JSON.stringify({ type: "utterance", text, lang: "pa-IN", ts: Date.now() }));
+}
+
+function sendMode(ws: WebSocket, lookAround: boolean): void {
+  ws.send(JSON.stringify({ type: "mode", lookAround }));
+}
+
+function sendSceneFrame(ws: WebSocket): void {
+  sendFrame(ws, { lens: "ultrawide", hfovDeg: 100 });
 }
 
 test("frame over WS yields a speak message (mock provider)", async () => {
@@ -545,6 +561,215 @@ test("agent history trims to the last 10 turns", async () => {
       assert.equal(agent.inputs[5]?.history.length, 10);
       assert.equal(agent.inputs[6]?.history.length, 10);
       assert.equal(agent.inputs[6]?.history[0]?.text, "sawal 1");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.CAPTURE_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+const LOOK_SCENE: SceneTriage = {
+  notes: [{ denomination: 500, confidence: 0.9 }],
+  people: [],
+  objects: [{ label: "kursi", x: 0.5, y: 0.6, distance: "mid", salience: 2 }],
+};
+
+const LOOK_SCENE_WITH_PERSON: SceneTriage = {
+  notes: [{ denomination: 500, confidence: 0.9 }],
+  people: [{ position: "centre", distance: "near", gender: "man", x: 0.2, y: 0.4 }],
+  objects: [{ label: "kursi", x: 0.5, y: 0.6, distance: "mid", salience: 2 }],
+};
+
+test("look-around: mode on -> cash + summary -> silence -> one person clock line", async () => {
+  const triage = new MockVisionTriage(undefined, [
+    LOOK_SCENE,
+    LOOK_SCENE,
+    LOOK_SCENE,
+    LOOK_SCENE_WITH_PERSON,
+    LOOK_SCENE_WITH_PERSON,
+  ]);
+  const t = await startTestServer(undefined, undefined, triage);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendMode(ws, true);
+      const mode = await collectUntil(ws, (m) => m.type === "state" && m.lookAround === true, 2000);
+      assert.ok(mode.length > 0, "server pushes look-around state");
+
+      // First scene frame: cash P1 first, then the summary P2.
+      sendSceneFrame(ws);
+      const first = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "scene", 2000);
+      const cash = first.find((m) => m.kind === "cash");
+      assert.equal(cash?.text, "ਪੰਜ ਸੌ ਦਾ ਨੋਟ");
+      assert.equal(cash?.priority, "P1");
+      const summary = first.find((m) => m.kind === "scene");
+      assert.equal(summary?.text, "Saamne: kursi 12 o'clock");
+      assert.equal(summary?.priority, "P2");
+
+      // Identical frames: the same note and scene stay silent.
+      sendSceneFrame(ws);
+      sendSceneFrame(ws);
+      const quiet = await collectFor(ws, 400);
+      assert.ok(
+        quiet.every((m) => m.type !== "speak"),
+        `expected silence, got: ${JSON.stringify(quiet)}`
+      );
+
+      // A new person: first sighting is silent (stability), the second
+      // speaks exactly one person line with a clock, no scene duplicate.
+      sendSceneFrame(ws);
+      const stabilising = await collectFor(ws, 400);
+      assert.ok(
+        stabilising.every((m) => m.type !== "speak"),
+        `first sighting must stay silent, got: ${JSON.stringify(stabilising)}`
+      );
+      sendSceneFrame(ws);
+      const arrival = await collectUntil(ws, (m) => m.type === "speak", 2000);
+      const speaks = arrival.filter((m) => m.type === "speak");
+      assert.equal(speaks.length, 1);
+      assert.equal(speaks[0]?.kind, "people");
+      assert.equal(speaks[0]?.priority, "P3");
+      assert.equal(speaks[0]?.text, "Ik banda, 11 o'clock");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("bas with look-around on turns it off with Theek hai", async () => {
+  const t = await startTestServer();
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendMode(ws, true);
+      await collectUntil(ws, (m) => m.type === "state" && m.lookAround === true, 2000);
+      sendUtterance(ws, "bas");
+      // The speak is the last message of the turn: collect until it so the
+      // earlier state in the same chunk is not dropped.
+      const got = await collectUntil(ws, (m) => m.type === "speak", 2000);
+      assert.ok(
+        got.some((m) => m.type === "state" && m.lookAround === false),
+        `expected look-around off state, got: ${JSON.stringify(got)}`
+      );
+      assert.ok(
+        got.some((m) => m.type === "speak" && m.text === "Theek hai" && m.priority === "P1"),
+        `expected Theek hai, got: ${JSON.stringify(got)}`
+      );
+      // Back on the cash path: the next frame speaks cash, never a summary.
+      sendFrame(ws);
+      const after = await collectUntil(ws, (m) => m.type === "speak", 2000);
+      assert.equal(after.find((m) => m.type === "speak")?.kind, "cash");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("hor ki hai pages the scene as P1, then reports nothing notable", async () => {
+  const big: SceneTriage = {
+    notes: [],
+    people: [],
+    objects: [
+      { label: "phone", x: 0.5, y: 0.5, distance: "near", salience: 3 },
+      { label: "darwaza", x: 0.8, y: 0.5, distance: "mid", salience: 3 },
+      { label: "thaila", x: 0.6, y: 0.5, distance: "near", salience: 2 },
+      { label: "switch", x: 0.4, y: 0.5, distance: "mid", salience: 2 },
+      { label: "kursi", x: 0.5, y: 0.5, distance: "far", salience: 2 },
+    ],
+  };
+  const triage = new MockVisionTriage(undefined, [big]);
+  const t = await startTestServer(undefined, undefined, triage);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendMode(ws, true);
+      await collectUntil(ws, (m) => m.type === "state" && m.lookAround === true, 2000);
+      sendSceneFrame(ws);
+      const first = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "scene", 2000);
+      assert.equal(
+        first.find((m) => m.kind === "scene")?.text,
+        "Saamne: phone 12 o'clock, darwaza 1 o'clock, thaila 12 o'clock"
+      );
+
+      sendUtterance(ws, "hor ki hai");
+      const page = await collectUntil(ws, (m) => m.type === "speak", 2000);
+      const paging = page.find((m) => m.type === "speak");
+      assert.equal(paging?.priority, "P1");
+      assert.equal(paging?.kind, "answer");
+      assert.equal(paging?.text, "Hor: switch 12 o'clock, kursi 12 o'clock");
+      assert.ok(
+        page.every((m) => m.type !== "capture_now"),
+        "paging must not request a frame"
+      );
+
+      sendUtterance(ws, "hor ki hai");
+      const empty = await collectUntil(ws, (m) => m.type === "speak", 2000);
+      assert.equal(empty.find((m) => m.type === "speak")?.text, "Kujh khaas nahi");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("mode off clears narration; re-activation re-summarises", async () => {
+  const triage = new MockVisionTriage(undefined, [LOOK_SCENE]);
+  const t = await startTestServer(undefined, undefined, triage);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendMode(ws, true);
+      await collectUntil(ws, (m) => m.type === "state" && m.lookAround === true, 2000);
+      sendSceneFrame(ws);
+      const first = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "scene", 2000);
+      const text = first.find((m) => m.kind === "scene")?.text;
+      assert.equal(text, "Saamne: kursi 12 o'clock");
+
+      sendMode(ws, false);
+      await collectUntil(ws, (m) => m.type === "state" && m.lookAround === false, 2000);
+      sendMode(ws, true);
+      await collectUntil(ws, (m) => m.type === "state" && m.lookAround === true, 2000);
+      sendSceneFrame(ws);
+      const second = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "scene", 2000);
+      assert.equal(second.find((m) => m.kind === "scene")?.text, text);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("agent look_around action starts narration on the next frame", async () => {
+  process.env.CAPTURE_TIMEOUT_MS = "30";
+  const agent = new MockAgentBrain([
+    { say: "Look around on", positions: [], actions: [{ tool: "look_around", on: true }] },
+  ]);
+  const triage = new MockVisionTriage(undefined, [LOOK_SCENE]);
+  const t = await startTestServer(undefined, agent, triage);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "look around on karo");
+      const turn = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 2000);
+      assert.ok(
+        turn.some((m) => m.type === "state" && m.lookAround === true),
+        `expected look-around state, got: ${JSON.stringify(turn)}`
+      );
+      assert.ok(
+        turn.some((m) => m.type === "speak" && m.text === "Look around on"),
+        "agent confirmation spoken"
+      );
+      sendSceneFrame(ws);
+      const scene = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "scene", 2000);
+      assert.equal(scene.find((m) => m.kind === "scene")?.priority, "P2");
     } finally {
       ws.close();
     }

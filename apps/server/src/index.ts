@@ -12,6 +12,7 @@ import {
   isFrameMessage,
   isHelloMessage,
   isListeningMessage,
+  isModeMessage,
   isSettingsMessage,
   isUtteranceMessage,
   type DownMessage,
@@ -19,12 +20,14 @@ import {
   type SpeakMessage,
 } from "./protocol.js";
 import { LatestFrameStore } from "./store.js";
-import { createAdapters, providerFromEnv } from "./adapters/factory.js";
+import { createAdapters, providerFromEnv, type NamedTriage } from "./adapters/factory.js";
 import type { AgentBrain, AgentOutput } from "./adapters/agent.js";
 import { DecisionEngine, FACE_MATCH_THRESHOLD, type DecisionEvent } from "./decision.js";
+import { SceneNarrator } from "./narration.js";
 import {
   renderAgentUnsure,
   renderFind,
+  renderOkay,
   renderProactive,
   summarizePeople,
   type PersonBits,
@@ -49,6 +52,8 @@ export interface ServerOpts {
   embedder?: FaceEmbedder;
   /** Override the agent brain (tests inject a scripted mock). */
   agent?: AgentBrain;
+  /** Override vision triage (tests inject a scripted scene mock). */
+  triage?: NamedTriage;
 }
 
 /** How long an utterance waits for its capture_now frame (prompt 02: 800 ms). */
@@ -102,6 +107,7 @@ function sendJson(res: ServerResponse, status: number, obj: unknown): void {
 function kindForEvent(e: DecisionEvent): SpeakKind {
   if (e.kind === "COMMAND_ANSWER") return "answer";
   if (e.kind === "NOTE_SEEN" || e.kind === "NOTE_UNSURE") return "cash";
+  if (e.kind === "SCENE_SUMMARY" || e.kind === "SCENE_UPDATE") return "scene";
   return "people";
 }
 
@@ -112,6 +118,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
   const embedder = opts?.embedder ?? new StubFaceEmbedder();
   const adapters = createAdapters(provider, { store: people });
   const agent = opts?.agent ?? adapters.agent;
+  const triage = opts?.triage ?? adapters.triage;
   const frames = new LatestFrameStore();
   const stats = new UtteranceStats();
   const captureTimeoutMs = captureTimeoutFromEnv();
@@ -196,9 +203,12 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
 
   const wss = new WebSocketServer({ server: http });
   wss.on("connection", (ws: WebSocket) => {
-    // One session + engine per WS client; both die with the connection.
+    // One session + engine + narrator per WS client; all die with the connection.
     const session = new Session();
-    const engine = new DecisionEngine((e) => renderProactive(e, session.lang));
+    const engine = new DecisionEngine((e) =>
+      renderProactive(e, session.lang, session.lastFrame?.hfovDeg)
+    );
+    const narrator = new SceneNarrator();
     let lastPerception: { triage: TriageResult; faces: FaceHit[] } | null = null;
     const pendingCaptures = new Map<string, (f: SessionFrame) => void>();
 
@@ -238,19 +248,41 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       );
       const parts: PersonBits[] = known.map((h, i) => {
         const p = lastPerception?.triage.people[i];
-        return { name: h.name ?? undefined, position: p?.position ?? "centre", distance: p?.distance ?? "near" };
+        return {
+          name: h.name ?? undefined,
+          position: p?.position ?? "centre",
+          distance: p?.distance ?? "near",
+          x: p?.x,
+        };
       });
       for (const p of lastPerception.triage.people.slice(known.length)) {
-        parts.push({ position: p.position, distance: p.distance, gender: p.gender });
+        parts.push({ position: p.position, distance: p.distance, gender: p.gender, x: p.x });
       }
       return parts;
+    }
+
+    /** Single place that flips look-around: session, narrator, then the phone. */
+    function setLookAround(on: boolean): void {
+      session.lookAround = on;
+      session.sceneState.lookAround = on;
+      narrator.setActive(on);
+      pushState();
+    }
+
+    /** "Hor ki hai?": the next unmentioned scene page, or nothing notable. */
+    function answerMoreText(): string {
+      const items = narrator.requestMore();
+      if (items.length === 0) {
+        return renderProactive({ kind: "SCENE_SUMMARY", items: [] }, session.lang).text;
+      }
+      return renderProactive({ kind: "SCENE_UPDATE", items }, session.lang).text;
     }
 
     /** Fresh cash read; shared by the howmuch fast path and cash_check. */
     async function cashRead(): Promise<string> {
       const frame = frames.get();
       if (!frame) return renderProactive({ kind: "NOTE_UNSURE" }, session.lang).text;
-      const fresh = await adapters.triage.triage(frame.jpeg);
+      const fresh = await triage.triage(frame.jpeg);
       const top = fresh.notes[0];
       if (top && top.denomination !== null && top.confidence >= 0.5) {
         return renderProactive(
@@ -335,6 +367,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       }
       if (intent.kind === "cancel") {
         engine.cancel();
+        if (session.lookAround) {
+          setLookAround(false);
+          engine.answer(renderOkay(session.lang), session.lang);
+          sendDrained();
+        }
         console.log(`utterance fast-path (cancel) total=${Date.now() - tRx}ms`);
         return;
       }
@@ -343,6 +380,15 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         engine.answer(await cashRead(), session.lang);
         sendDrained();
         console.log(`utterance fast-path (howmuch) total=${Date.now() - tRx}ms`);
+        return;
+      }
+      // "Hor ki hai?" pages the scene when look-around has one; otherwise
+      // the agent answers from a fresh frame like any other question.
+      if (intent.kind === "more" && session.lookAround && narrator.hasScene()) {
+        engine.cancel();
+        engine.answer(answerMoreText(), session.lang);
+        sendDrained();
+        console.log(`utterance fast-path (more) total=${Date.now() - tRx}ms`);
         return;
       }
 
@@ -382,7 +428,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       }
       const tModelEnd = Date.now();
 
-      await applyAgentActions(output.actions, { session, engine, send, cashCheck: cashRead });
+      await applyAgentActions(output.actions, { session, engine, send, cashCheck: cashRead, narrator });
       const rendered =
         output.say === null ? null : renderPositions(output.say, output.positions, usedHfov, session.lang);
       if (rendered) engine.answer(rendered, session.lang);
@@ -414,6 +460,14 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           return;
         case "cancel":
           engine.cancel();
+          if (session.lookAround) {
+            setLookAround(false);
+            engine.answer(renderOkay(session.lang), session.lang);
+          }
+          return;
+        case "more":
+          engine.cancel();
+          engine.answer(answerMoreText(), session.lang);
           return;
         case "unknown":
           console.log(`ignoring unparseable command: ${transcript}`);
@@ -444,7 +498,10 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         }
         case "who": {
           engine.cancel();
-          engine.answer(summarizePeople(whoParts(), session.lang), session.lang);
+          engine.answer(
+            summarizePeople(whoParts(), session.lang, session.lastFrame?.hfovDeg),
+            session.lang
+          );
           return;
         }
         case "howmuch": {
@@ -470,13 +527,16 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         session.lastFrame = sessionFrame;
         if (msg.reqId) pendingCaptures.get(msg.reqId)?.(sessionFrame);
         try {
+          // Look-around frames take the scene prompt (cash + people with
+          // coordinates + objects); otherwise the fast cash-only prompt.
           const [result, hits] = await Promise.all([
-            adapters.triage.triage(jpeg),
+            session.lookAround ? triage.triageScene(jpeg) : triage.triage(jpeg),
             adapters.faces.match(jpeg),
           ]);
           lastPerception = { triage: result, faces: hits };
-          session.sceneState = sceneFromPerception(result, hits, session.lookAround);
+          session.sceneState = sceneFromPerception(result, hits, session.lookAround, hfovDeg);
           engine.onFrame(result, hits);
+          for (const ev of narrator.onScene(result, hfovDeg)) engine.announceScene(ev);
         } catch (err) {
           console.error("perception failed:", err instanceof Error ? err.message : err);
           return [];
@@ -519,6 +579,10 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       if (isListeningMessage(msg)) {
         console.log(`listening: ${msg.state}`);
         if (msg.state === "start") engine.cancel();
+        return [];
+      }
+      if (isModeMessage(msg)) {
+        setLookAround(msg.lookAround);
         return [];
       }
       if (isSettingsMessage(msg)) {

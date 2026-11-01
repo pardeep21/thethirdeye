@@ -176,7 +176,12 @@ export default function App() {
         onCaptureNow: (msg) => {
           void uploadFrameRef.current(msg.reqId);
         },
-        onState: (msg) => setServerState(msg),
+        // The server is the source of truth for look-around: the tile sends
+        // mode up, and agent/bas-driven changes come back down through state.
+        onState: (msg) => {
+          setServerState(msg);
+          setLookAround(msg.lookAround);
+        },
         onUtteranceSent: (ts) => {
           utteranceTsRef.current = ts;
         },

@@ -9,6 +9,7 @@ export type Intent =
   | { kind: "find"; noun: string }
   | { kind: "who" }
   | { kind: "howmuch" }
+  | { kind: "more" }
   | { kind: "mute" }
   | { kind: "unmute" }
   | { kind: "cancel" }
@@ -49,6 +50,7 @@ const FIND_WHERE = [
 ];
 const WHO = ["kaun", "koun", "who", "ਕੌਣ", "कौन"];
 const HOWMUCH = ["kinne", "kine", "how much", "ਕਿੰਨੇ", "कितने"];
+const MORE = ["hor", "more", "else", "aur kya", "kya aur", "aur bata", "aur batao", "ਹੋਰ", "और"];
 const DESCRIBE = [
   "describe",
   "saamne",
@@ -122,6 +124,10 @@ const FIND_STOP = new Set<string>([
   "dikhado",
   "zara",
   "jara",
+  "hor",
+  "more",
+  "else",
+  "aur",
   "hai?",
   // Gurmukhi + Devanagari auxiliaries.
   "ਹੈ",
@@ -156,6 +162,8 @@ const FIND_STOP = new Set<string>([
   "बताओ",
   "बताइए",
   "जरा",
+  "ਹੋਰ",
+  "और",
 ]);
 
 function normalize(text: string): string {
@@ -182,6 +190,9 @@ export function routeIntent(text: string): Intent {
     if (hasAny(CANCEL)) return { kind: "cancel" };
   }
   if (hasAny(READ)) return { kind: "read" };
+  // "Hor ki hai?" pages the look-around scene, but a where-word or kaun
+  // next to "hor" keeps its own meaning ("hor kaun hai" is a who).
+  if (hasAny(MORE) && !hasAny(FIND_WHERE) && !hasAny(WHO)) return { kind: "more" };
   if (hasAny(FIND_WHERE)) {
     const noun = words.filter((w) => !FIND_STOP.has(w)).join(" ");
     if (noun) return { kind: "find", noun: capitalize(noun) };

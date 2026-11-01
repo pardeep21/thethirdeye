@@ -81,3 +81,21 @@ test("greetings and chatter stay unknown (silent)", () => {
   assert.equal(routeIntent("thank you").kind, "unknown");
   assert.equal(routeIntent("").kind, "unknown");
 });
+
+test("more pages the look-around scene", () => {
+  assert.equal(routeIntent("hor ki hai").kind, "more");
+  assert.equal(routeIntent("Hor ki hai?").kind, "more");
+  assert.equal(routeIntent("hor").kind, "more");
+  assert.equal(routeIntent("what else").kind, "more");
+  assert.equal(routeIntent("what else is there").kind, "more");
+  assert.equal(routeIntent("tell me more").kind, "more");
+  assert.equal(routeIntent("aur kya hai").kind, "more");
+  assert.equal(routeIntent("ਹੋਰ ਕੀ ਹੈ").kind, "more");
+  assert.equal(routeIntent("और क्या है").kind, "more");
+});
+
+test("more yields to find, who and read", () => {
+  assert.deepEqual(routeIntent("hor, kainchi kithe hai"), { kind: "find", noun: "Kainchi" });
+  assert.equal(routeIntent("hor kaun hai").kind, "who");
+  assert.equal(routeIntent("hor padh").kind, "read");
+});

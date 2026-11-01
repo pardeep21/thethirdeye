@@ -6,7 +6,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import OpenAI from "openai";
 import type { ChatCompletion } from "openai/resources/chat/completions";
-import type { Denomination, TriagePerson, TriageResult } from "../protocol.js";
+import type {
+  Denomination,
+  SceneObject,
+  SceneTriage,
+  TriagePerson,
+  TriageResult,
+} from "../protocol.js";
 import type { NamedTriage, VisionAnswer } from "./index.js";
 
 /** Triage token budget: 400 leaves room for reasoning + JSON (was 80). */
@@ -137,6 +143,15 @@ export function validateTriageResult(obj: unknown): TriageResult {
       if (typeof rec.action !== "string") throw new Error(`triage.people[${i}].action must be a string`);
       person.action = rec.action;
     }
+    // Scene-triage coordinates ride along when present (clamped); a bad
+    // coordinate drops the position, never the person.
+    for (const key of ["x", "y"] as const) {
+      const v = rec[key];
+      if (v !== undefined && v !== null) {
+        if (typeof v !== "number" || !Number.isFinite(v)) continue;
+        person[key] = Math.min(1, Math.max(0, v));
+      }
+    }
     return person;
   });
 
@@ -148,11 +163,83 @@ export function parseTriageResult(text: string): TriageResult {
   return validateTriageResult(extractJsonObject(text));
 }
 
+/** Scene token budget: the objects array needs room beyond cash triage. */
+export const DEFAULT_SCENE_MAX_TOKENS = 800;
+
+export function sceneMaxTokensFromEnv(): number {
+  const raw = process.env.SCENE_MAX_TOKENS;
+  if (raw !== undefined) {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n > 0) return n;
+    throw new Error(`SCENE_MAX_TOKENS=${raw} must be a positive integer`);
+  }
+  return DEFAULT_SCENE_MAX_TOKENS;
+}
+
+export const SCENE_SYSTEM_PROMPT = [
+  "You are a vision module for a blind shopkeeper's assistant.",
+  "Look at the image and return ONLY a JSON object with this exact shape, no other text:",
+  '{"notes":[{"denomination":10|20|50|100|200|500|null,"confidence":0-1}],"people":[{"position":"left"|"centre"|"right","distance":"near"|"far","gender":"man"|"woman"|null,"age_range":"<like 20s or 60+ or null>","action":"<short, e.g. handing a note, or null>","x":0-1,"y":0-1}],"objects":[{"label":"<short noun>","x":0-1,"y":0-1,"distance":"near"|"mid"|"far","salience":1|2|3}]}',
+  "Rules: Indian rupee notes only, both old Mahatma Gandhi series and new series; use null denomination with confidence below 0.6 when a note-like object is unclear (never guess the value); confidence is your certainty 0..1.",
+  "People: keep position/distance plus normalised x (0 = left edge, 1 = right edge) and y (0 = top, 1 = bottom) of each person's centre; omit people you cannot see; never name anyone.",
+  "Objects: at most 8, most salient first. Label is a short noun in his Punjabi-English mix (thaila, phone, kursi, darwaza, switch, shutter, counter, bag). Salience 3 = useful for a blind person (doors, steps, obstacles in the path, things on the counter, bags), 1 = background clutter (walls, ceiling). Coordinates are normalised 0..1 from the image's top-left.",
+].join(" ");
+
+/** Max scene objects kept per result (prompt asks for 8; the parser caps). */
+export const SCENE_OBJECTS_MAX = 8;
+
+function isValidSceneObject(o: unknown): o is SceneObject {
+  if (typeof o !== "object" || o === null) return false;
+  const rec = o as Record<string, unknown>;
+  return (
+    typeof rec.label === "string" &&
+    rec.label.trim().length > 0 &&
+    typeof rec.x === "number" &&
+    Number.isFinite(rec.x) &&
+    typeof rec.y === "number" &&
+    Number.isFinite(rec.y) &&
+    (rec.distance === "near" || rec.distance === "mid" || rec.distance === "far") &&
+    (rec.salience === 1 || rec.salience === 2 || rec.salience === 3)
+  );
+}
+
+/**
+ * Strict like validateTriageResult for notes/people (shared), with the
+ * scene extras sanitised: x/y clamped to [0,1], bad object items dropped
+ * (one noisy object must not kill cash + people perception), capped at 8.
+ */
+export function validateSceneTriage(obj: unknown): SceneTriage {
+  const base = validateTriageResult(obj);
+  const root = obj as Record<string, unknown>;
+  const objectsRaw = root.objects ?? [];
+  if (!Array.isArray(objectsRaw)) throw new Error("scene.objects must be an array");
+  const objects: SceneObject[] = [];
+  for (const o of objectsRaw) {
+    if (!isValidSceneObject(o)) continue;
+    objects.push({
+      label: o.label.trim(),
+      x: Math.min(1, Math.max(0, o.x)),
+      y: Math.min(1, Math.max(0, o.y)),
+      distance: o.distance,
+      salience: o.salience,
+    });
+    if (objects.length >= SCENE_OBJECTS_MAX) break;
+  }
+  return { ...base, objects };
+}
+
+/** Extract + validate a scene answer in one step. */
+export function parseSceneTriage(text: string): SceneTriage {
+  return validateSceneTriage(extractJsonObject(text));
+}
+
 export interface OpenAICompatOptions {
   baseURL: string;
   model: string;
   apiKey: string;
   maxTokens?: number;
+  /** Scene-call budget; defaults to DEFAULT_SCENE_MAX_TOKENS. */
+  sceneMaxTokens?: number;
   /** Flat reasoning_effort (Meta docs); omitted when undefined. */
   reasoningEffort?: string;
   /** When set, every call writes a raw request/response log here. */
@@ -188,6 +275,7 @@ export function sanitizeLabel(label: string): string {
 export class OpenAICompatTriage implements NamedTriage {
   readonly name: string;
   readonly maxTokens: number;
+  readonly sceneMaxTokens: number;
   readonly reasoningEffort: string | undefined;
   private readonly client: OpenAI;
   private readonly model: string;
@@ -199,23 +287,43 @@ export class OpenAICompatTriage implements NamedTriage {
     this.model = opts.model;
     this.name = `openai-compat:${opts.model}`;
     this.maxTokens = opts.maxTokens ?? DEFAULT_TRIAGE_MAX_TOKENS;
+    this.sceneMaxTokens = opts.sceneMaxTokens ?? DEFAULT_SCENE_MAX_TOKENS;
     this.reasoningEffort = opts.reasoningEffort;
     this.debugDir = opts.debugDir;
     this.lastUsage = undefined;
   }
 
   async triage(img: Buffer, debugLabel?: string): Promise<TriageResult> {
+    return this.runPrompt(TRIAGE_SYSTEM_PROMPT, this.maxTokens, img, debugLabel, parseTriageResult);
+  }
+
+  async triageScene(img: Buffer, debugLabel?: string): Promise<SceneTriage> {
+    return this.runPrompt(SCENE_SYSTEM_PROMPT, this.sceneMaxTokens, img, debugLabel, parseSceneTriage);
+  }
+
+  /**
+   * One vision round trip shared by cash and scene triage: json_object
+   * with a prompt-only fallback, then the caller's parse step. Debug
+   * always records the raw attempts, even when parsing fails.
+   */
+  private async runPrompt<T>(
+    prompt: string,
+    maxTokens: number,
+    img: Buffer,
+    debugLabel: string | undefined,
+    parse: (text: string) => T
+  ): Promise<T> {
     const dataUrl = toDataUrl(img);
     const attempts: DebugAttempt[] = [];
     const baseRequest = {
       model: this.model,
-      max_tokens: this.maxTokens,
+      max_tokens: maxTokens,
       ...(this.reasoningEffort ? { reasoning_effort: this.reasoningEffort } : {}),
       messages: [
         {
           role: "user",
           content: [
-            { type: "text", text: TRIAGE_SYSTEM_PROMPT },
+            { type: "text", text: prompt },
             { type: "image_url", image_url: { url: dataUrl } },
           ],
         },
@@ -242,7 +350,7 @@ export class OpenAICompatTriage implements NamedTriage {
           ? { promptTokens: res.usage.prompt_tokens, completionTokens: res.usage.completion_tokens }
           : undefined;
         attempts.push({
-          request: debugRequest(params, img.length, dataUrl),
+          request: debugRequest(params, img.length, dataUrl, prompt),
           latencyMs: Date.now() - start,
           response: {
             content,
@@ -255,7 +363,7 @@ export class OpenAICompatTriage implements NamedTriage {
         return content;
       } catch (err) {
         attempts.push({
-          request: debugRequest(params, img.length, dataUrl),
+          request: debugRequest(params, img.length, dataUrl, prompt),
           latencyMs: Date.now() - start,
           response: null,
           error: err instanceof Error ? err.message : String(err),
@@ -276,7 +384,7 @@ export class OpenAICompatTriage implements NamedTriage {
           throw err;
         }
       }
-      const result = parseTriageResult(text);
+      const result = parse(text);
       this.writeDebug(debugLabel, attempts, true, null);
       return result;
     } catch (err) {
@@ -321,13 +429,18 @@ function toDataUrl(img: Buffer): string {
   return `data:image/jpeg;base64,${img.toString("base64")}`;
 }
 
-function debugRequest(params: Record<string, unknown>, imgBytes: number, dataUrl: string): Record<string, unknown> {
+function debugRequest(
+  params: Record<string, unknown>,
+  imgBytes: number,
+  dataUrl: string,
+  prompt: string
+): Record<string, unknown> {
   return {
     model: params.model,
     max_tokens: params.max_tokens,
     response_format: params.response_format ?? null,
     reasoning_effort: params.reasoning_effort ?? null,
-    prompt: TRIAGE_SYSTEM_PROMPT,
+    prompt,
     image: { bytes: imgBytes, dataUrlLength: dataUrl.length, dataUrlPrefix: dataUrl.slice(0, 80) },
   };
 }

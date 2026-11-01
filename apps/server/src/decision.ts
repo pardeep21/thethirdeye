@@ -22,14 +22,24 @@ export const P3_MAX_AGE_MS = 3000;
 export const FACE_MATCH_THRESHOLD = 0.75;
 export const P1_QUEUE_MAX = 10;
 
+/** One spoken item in a look-around summary or update (clock pre-rendered). */
+export type ScenePhraseItem =
+  | { kind: "object"; label: string; clock: number }
+  | { kind: "person"; gender?: "man" | "woman"; clock: number };
+
 export type DecisionEvent =
   | { kind: "NOTE_SEEN"; denominations: Denomination[]; confidences: number[] }
   | { kind: "NOTE_UNSURE" }
   | { kind: "KNOWN_ARRIVED"; personId: string; name: string }
   | { kind: "PERSON_ARRIVED"; count: number; people: TriagePerson[] }
+  | { kind: "SCENE_SUMMARY"; items: ScenePhraseItem[] }
+  | { kind: "SCENE_UPDATE"; items: ScenePhraseItem[] }
   | { kind: "COMMAND_ANSWER"; text: string; lang: SpeakLang };
 
 export type ProactiveEvent = Exclude<DecisionEvent, { kind: "COMMAND_ANSWER" }>;
+
+/** Look-around narration events (summary speaks P2, updates P3). */
+export type SceneDecisionEvent = Extract<DecisionEvent, { kind: "SCENE_SUMMARY" | "SCENE_UPDATE" }>;
 
 export interface RenderedPhrase {
   text: string;
@@ -69,6 +79,10 @@ export function minimalRenderer(event: ProactiveEvent): RenderedPhrase {
       return { text: `${event.name} arrived`, lang: "en" };
     case "PERSON_ARRIVED":
       return { text: event.count === 1 ? "1 person" : `${event.count} people`, lang: "en" };
+    case "SCENE_SUMMARY":
+      return { text: `scene: ${event.items.length} items`, lang: "en" };
+    case "SCENE_UPDATE":
+      return { text: `update: ${event.items.length} items`, lang: "en" };
   }
 }
 
@@ -245,6 +259,16 @@ export class DecisionEngine {
   /** User asked something: answer speaks as P1 behind any cash already queued. */
   answer(text: string, lang: SpeakLang, nowMs: number = this.clock()): void {
     this.enqueueP1({ kind: "COMMAND_ANSWER", text, lang }, nowMs);
+  }
+
+  /**
+   * Look-around narration in: summary speaks as P2, updates as P3 (stale
+   * drops and P1 yielding come from the queues). Muted drops both.
+   */
+  announceScene(event: SceneDecisionEvent, nowMs: number = this.clock()): void {
+    if (this.muted) return;
+    if (event.kind === "SCENE_SUMMARY") this.enqueueP2(event, nowMs);
+    else this.enqueueP3(event, nowMs);
   }
 
   setMuted(muted: boolean): void {

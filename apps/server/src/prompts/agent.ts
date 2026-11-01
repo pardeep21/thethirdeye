@@ -3,7 +3,7 @@ import type { SpeakLang, SpokenScript } from "../protocol.js";
 import type { SceneState } from "../session.js";
 
 /** Bump when the prompt text changes so evals stay comparable. */
-export const AGENT_PROMPT_VERSION = 1;
+export const AGENT_PROMPT_VERSION = 2;
 
 const SCRIPT_LINE: Record<SpokenScript, string> = {
   gurmukhi: "Write say in Gurmukhi (Punjabi) script, in his mix of Punjabi and English.",
@@ -43,7 +43,7 @@ export function buildAgentSystemPrompt(opts: { lang: SpeakLang; script: SpokenSc
   ].join("\n");
 }
 
-/** Compact scene block appended to the system prompt (prompts 03/06 enrich it). */
+/** Compact scene block appended to the system prompt (prompt 06 enriches it). */
 export function buildSceneBlock(scene: SceneState): string {
   const people =
     scene.people.length === 0
@@ -56,10 +56,15 @@ export function buildSceneBlock(scene: SceneState): string {
           )
           .join("; ");
   const notes = scene.recentNotes.length === 0 ? "none" : scene.recentNotes.join("; ");
+  const objects =
+    scene.objects.length === 0
+      ? "none"
+      : scene.objects.map((o) => `${o.label} at ${o.clock} o'clock, ${o.distance}`).join("; ");
   return [
     "Scene (may be slightly stale; the attached photo is current):",
     `look-around: ${scene.lookAround ? "on" : "off"}.`,
     `People in view: ${people}.`,
     `Recent notes: ${notes}.`,
+    `Objects in view: ${objects}.`,
   ].join("\n");
 }

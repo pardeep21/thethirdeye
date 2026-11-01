@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
 import type { NamedTriage } from "@thethirdeye/server/adapters";
-import type { TriageResult } from "@thethirdeye/server/protocol";
+import type { SceneTriage, TriageResult } from "@thethirdeye/server/protocol";
 import { debugLabelFor, parseExpected, runNotes } from "./notes.js";
 
 function stubTriage(opts: {
@@ -24,6 +24,10 @@ function stubTriage(opts: {
       if (debugLabel && opts.seenLabels) opts.seenLabels.push(debugLabel);
       if (opts.failWith) throw new Error(opts.failWith);
       return opts.result ?? { notes: [], people: [] };
+    },
+    // The notes eval never takes the scene path; fail closed if it ever does.
+    triageScene: async (_img: Buffer, _debugLabel?: string): Promise<SceneTriage> => {
+      throw new Error("triageScene is not stubbed in the notes eval");
     },
   };
 }

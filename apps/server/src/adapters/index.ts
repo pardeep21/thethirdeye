@@ -1,10 +1,12 @@
 // Model adapter layer (MVP.md section 2). Every model sits behind one of
 // these interfaces; providers are selected by PROVIDER env (mock-first).
-import type { Box, FaceHit, TriageResult } from "../protocol.js";
+import type { Box, FaceHit, SceneTriage, TriageResult } from "../protocol.js";
 import type { AgentBrain } from "./agent.js";
 
 export interface VisionTriage {
   triage(img: Buffer): Promise<TriageResult>;
+  /** Look-around call: cash + people with coordinates + scene objects. */
+  triageScene(img: Buffer, debugLabel?: string): Promise<SceneTriage>;
 } // F1 + F2
 
 export interface VisionAnswer {

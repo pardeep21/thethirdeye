@@ -3,7 +3,11 @@
 // specified); English and Hindi variants included. Free-form describe/read
 // answers come from the model, not from here.
 import type { Box, Denomination, SpeakLang } from "./protocol.js";
-import type { ProactiveEvent, RenderedPhrase } from "./decision.js";
+import type { ProactiveEvent, RenderedPhrase, ScenePhraseItem } from "./decision.js";
+import { renderClock, toClock } from "./clock.js";
+
+/** Re-exported so people-line callers keep one phrases import. */
+export { renderClock };
 
 const PA_NUMBERS: Record<Denomination, string> = {
   10: "ਦਸ",
@@ -33,10 +37,18 @@ function countWord(n: number, lang: SpeakLang): string {
 interface Place {
   position: "left" | "centre" | "right";
   distance: "near" | "far";
+  /** Normalised x from scene triage; with hfovDeg this renders a clock hour. */
+  x?: number;
 }
 
-/** Rough position words. Centre+near is the counter; far is the door side. */
-function where(p: Place, lang: SpeakLang): string {
+/**
+ * Position words: a clock hour whenever x + hfovDeg are available, else
+ * the rough words (centre+near is the counter; far is the door side).
+ */
+function where(p: Place, lang: SpeakLang, hfovDeg?: number): string {
+  if (typeof p.x === "number" && Number.isFinite(p.x) && typeof hfovDeg === "number") {
+    return renderClock(toClock(p.x, hfovDeg), lang);
+  }
   if (p.position === "centre") {
     if (p.distance === "near") return lang === "en" ? "at the counter" : lang === "hi" ? "counter par" : "counter te";
     return lang === "en" ? "near the door" : lang === "hi" ? "darwaze ke paas" : "door kol";
@@ -70,15 +82,41 @@ interface UnknownBits extends Place {
   age_range?: string;
 }
 
-function singleUnknown(p: UnknownBits, lang: SpeakLang): string {
+function singleUnknown(p: UnknownBits, lang: SpeakLang, hfovDeg?: number): string {
   const who = p.gender === "woman" ? (lang === "en" ? "woman" : lang === "hi" ? "aurat" : "aurat") : lang === "en" ? "man" : lang === "hi" ? "aadmi" : "banda";
   const age = p.age_range ? (lang === "hi" ? `, lagbhag ${p.age_range}` : `, around ${p.age_range}`) : "";
-  if (lang === "en") return `A ${who}${age}, ${where(p, lang)}`;
-  if (lang === "hi") return `Ek ${who}${age}, ${where(p, lang)}`;
-  return `Ik ${who}${age}, ${where(p, lang)}`;
+  if (lang === "en") return `A ${who}${age}, ${where(p, lang, hfovDeg)}`;
+  if (lang === "hi") return `Ek ${who}${age}, ${where(p, lang, hfovDeg)}`;
+  return `Ik ${who}${age}, ${where(p, lang, hfovDeg)}`;
 }
 
-export function renderProactive(event: ProactiveEvent, lang: SpeakLang = "pa"): RenderedPhrase {
+function sceneItemText(item: ScenePhraseItem, lang: SpeakLang): string {
+  const clock = renderClock(item.clock, lang);
+  if (item.kind === "person") {
+    const who =
+      item.gender === "woman"
+        ? lang === "en"
+          ? "woman"
+          : lang === "hi"
+            ? "aurat"
+            : "aurat"
+        : lang === "en"
+          ? "man"
+          : lang === "hi"
+            ? "aadmi"
+            : "banda";
+    if (lang === "en") return `a ${who} ${clock}`;
+    if (lang === "hi") return `ek ${who} ${clock}`;
+    return `ik ${who} ${clock}`;
+  }
+  return `${item.label} ${clock}`;
+}
+
+export function renderProactive(
+  event: ProactiveEvent,
+  lang: SpeakLang = "pa",
+  hfovDeg?: number
+): RenderedPhrase {
   switch (event.kind) {
     case "NOTE_SEEN":
       return { text: renderNoteSeen(event.denominations, lang), lang };
@@ -93,13 +131,32 @@ export function renderProactive(event: ProactiveEvent, lang: SpeakLang = "pa"): 
     case "PERSON_ARRIVED": {
       if (event.count <= 1) {
         const first: UnknownBits = event.people[0] ?? { position: "centre", distance: "near" };
-        return { text: singleUnknown(first, lang), lang };
+        return { text: singleUnknown(first, lang, hfovDeg), lang };
       }
       const first: Place = event.people[0] ?? { position: "centre", distance: "near" };
-      if (lang === "en") return { text: `${event.count} people, ${where(first, lang)}`, lang };
-      return { text: `${countWord(event.count, lang)} log, ${where(first, lang)}`, lang };
+      if (lang === "en") return { text: `${event.count} people, ${where(first, lang, hfovDeg)}`, lang };
+      return { text: `${countWord(event.count, lang)} log, ${where(first, lang, hfovDeg)}`, lang };
+    }
+    case "SCENE_SUMMARY": {
+      if (event.items.length === 0) {
+        if (lang === "en") return { text: "Nothing notable", lang };
+        if (lang === "hi") return { text: "Kuch khaas nahi", lang };
+        return { text: "Kujh khaas nahi", lang };
+      }
+      const head = lang === "en" ? "In front" : "Saamne";
+      return { text: `${head}: ${event.items.map((i) => sceneItemText(i, lang)).join(", ")}`, lang };
+    }
+    case "SCENE_UPDATE": {
+      const head = lang === "en" ? "Also" : lang === "hi" ? "Aur" : "Hor";
+      return { text: `${head}: ${event.items.map((i) => sceneItemText(i, lang)).join(", ")}`, lang };
     }
   }
+}
+
+/** "Bas"/"band kar" with look-around on: the mode switches off with one word. */
+export function renderOkay(lang: SpeakLang = "pa"): string {
+  if (lang === "en") return "Okay";
+  return "Theek hai";
 }
 
 export interface PersonBits extends Place {
@@ -109,29 +166,24 @@ export interface PersonBits extends Place {
 }
 
 /** "kaun hai?" answer: one line summarising everyone in front. Used by M4. */
-export function summarizePeople(items: PersonBits[], lang: SpeakLang = "pa"): string {
+export function summarizePeople(items: PersonBits[], lang: SpeakLang = "pa", hfovDeg?: number): string {
   if (items.length === 0) return lang === "en" ? "Nobody here" : "Koi nahi";
   if (items.length === 1) {
     const p = items[0];
     if (p.name) {
-      if (lang === "en") return `${p.name} is here, ${where(p, lang)}`;
-      return `${p.name} ${where(p, lang)}`;
+      if (lang === "en") return `${p.name} is here, ${where(p, lang, hfovDeg)}`;
+      return `${p.name} ${where(p, lang, hfovDeg)}`;
     }
-    return singleUnknown(p, lang);
+    return singleUnknown(p, lang, hfovDeg);
   }
   const parts = items.map((p) => {
-    if (p.name) return `${p.name} ${where(p, lang)}`;
-    if (lang === "en") return `a ${p.gender === "woman" ? "woman" : "man"} ${where(p, lang)}`;
-    if (lang === "hi") return `ek ${p.gender === "woman" ? "aurat" : "aadmi"} ${where(p, lang)}`;
-    return `ik ${p.gender === "woman" ? "aurat" : "banda"} ${where(p, lang)}`;
+    if (p.name) return `${p.name} ${where(p, lang, hfovDeg)}`;
+    if (lang === "en") return `a ${p.gender === "woman" ? "woman" : "man"} ${where(p, lang, hfovDeg)}`;
+    if (lang === "hi") return `ek ${p.gender === "woman" ? "aurat" : "aadmi"} ${where(p, lang, hfovDeg)}`;
+    return `ik ${p.gender === "woman" ? "aurat" : "banda"} ${where(p, lang, hfovDeg)}`;
   });
   if (lang === "en") return `${items.length} people: ${parts.join(", ")}`;
   return `${countWord(items.length, lang)} log: ${parts.join(", ")}`;
-}
-
-/** Clock position words. Code-mix keeps "o'clock" (DEV-PLAN section 2). */
-export function renderClock(hour: number, _lang: SpeakLang = "pa"): string {
-  return `${hour} o'clock`;
 }
 
 /** Agent fallback when it cannot answer (bad model JSON, no usable view). */

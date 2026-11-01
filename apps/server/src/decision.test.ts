@@ -301,3 +301,46 @@ test("command answer speaks as P1 behind cash already queued", () => {
   assert.equal(speaks[1].text, "sau da note");
   assert.equal(speaks[1].lang, "pa");
 });
+
+test("scene summary speaks as P2, scene update as P3", () => {
+  const { eng } = makeEngine();
+  eng.announceScene({ kind: "SCENE_SUMMARY", items: [] }, 0);
+  eng.announceScene({ kind: "SCENE_UPDATE", items: [] }, 0);
+  const speaks = eng.takeSpeak(0);
+  assert.deepEqual(
+    speaks.map((s) => [s.event.kind, s.priority]),
+    [
+      ["SCENE_SUMMARY", "P2"],
+      ["SCENE_UPDATE", "P3"],
+    ]
+  );
+});
+
+test("scene update yields to P1 and drops when stale", () => {
+  const { eng } = makeEngine();
+  eng.announceScene({ kind: "SCENE_UPDATE", items: [] }, 0);
+  eng.answer("jawab", "pa", 0);
+  const speaks = eng.takeSpeak(0);
+  assert.deepEqual(
+    speaks.map((s) => s.event.kind),
+    ["COMMAND_ANSWER"]
+  );
+  const stale = makeEngine();
+  stale.eng.announceScene({ kind: "SCENE_UPDATE", items: [] }, 0);
+  assert.deepEqual(stale.eng.takeSpeak(3100), []);
+  const staleSummary = makeEngine();
+  staleSummary.eng.announceScene({ kind: "SCENE_SUMMARY", items: [] }, 0);
+  assert.deepEqual(staleSummary.eng.takeSpeak(5100), []);
+});
+
+test("muted engine drops scene announcements; cancel clears them", () => {
+  const { eng } = makeEngine();
+  eng.setMuted(true);
+  eng.announceScene({ kind: "SCENE_SUMMARY", items: [] }, 0);
+  eng.announceScene({ kind: "SCENE_UPDATE", items: [] }, 0);
+  assert.deepEqual(eng.takeSpeak(0), []);
+  const second = makeEngine();
+  second.eng.announceScene({ kind: "SCENE_SUMMARY", items: [] }, 0);
+  second.eng.cancel();
+  assert.deepEqual(second.eng.takeSpeak(0), []);
+});

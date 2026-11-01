@@ -12,6 +12,8 @@ export interface ActionContext {
   send: (msg: DownMessage) => void;
   /** Fresh cash read; reuses the howmuch path. */
   cashCheck: () => Promise<string>;
+  /** Look-around narrator; the look_around action drives it when present. */
+  narrator?: { setActive(on: boolean): void };
 }
 
 function pushState(ctx: ActionContext): void {
@@ -30,6 +32,7 @@ export async function applyAgentActions(actions: AgentAction[], ctx: ActionConte
       case "look_around":
         ctx.session.lookAround = a.on;
         ctx.session.sceneState.lookAround = a.on;
+        ctx.narrator?.setActive(a.on);
         pushState(ctx);
         break;
       case "mute":

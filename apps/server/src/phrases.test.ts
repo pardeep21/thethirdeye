@@ -2,7 +2,14 @@
 // plus en/hi locks and edge cases.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderAgentUnsure, renderClock, renderFind, renderProactive, summarizePeople } from "./phrases.js";
+import {
+  renderAgentUnsure,
+  renderClock,
+  renderFind,
+  renderOkay,
+  renderProactive,
+  summarizePeople,
+} from "./phrases.js";
 import type { ProactiveEvent } from "./decision.js";
 
 function noteSeen(...denominations: Array<10 | 20 | 50 | 100 | 200 | 500>): ProactiveEvent {
@@ -157,4 +164,111 @@ test("find answers cover centre and high positions", () => {
   assert.equal(renderFind("Phone", { x: 0.4, y: 0.4, w: 0.2, h: 0.2 }), "Phone, saamne");
   assert.equal(renderFind("Phone", { x: 0.1, y: 0.1, w: 0.1, h: 0.1 }), "Phone, left side, uppar");
   assert.equal(renderFind("Phone", { x: 0.4, y: 0.1, w: 0.2, h: 0.1 }, "en"), "Phone, in front, up high");
+});
+
+test("scene summary matches the spec shape", () => {
+  const ev: ProactiveEvent = {
+    kind: "SCENE_SUMMARY",
+    items: [
+      { kind: "object", label: "kursi", clock: 12 },
+      { kind: "object", label: "darwaza", clock: 2 },
+      { kind: "person", gender: "man", clock: 10 },
+    ],
+  };
+  assert.equal(
+    renderProactive(ev).text,
+    "Saamne: kursi 12 o'clock, darwaza 2 o'clock, ik banda 10 o'clock"
+  );
+  assert.equal(
+    renderProactive(ev, "en").text,
+    "In front: kursi 12 o'clock, darwaza 2 o'clock, a man 10 o'clock"
+  );
+  assert.equal(
+    renderProactive(ev, "hi").text,
+    "Saamne: kursi 12 o'clock, darwaza 2 o'clock, ek aadmi 10 o'clock"
+  );
+  const woman: ProactiveEvent = {
+    kind: "SCENE_SUMMARY",
+    items: [{ kind: "person", gender: "woman", clock: 3 }],
+  };
+  assert.equal(renderProactive(woman).text, "Saamne: ik aurat 3 o'clock");
+});
+
+test("empty scene summary says nothing notable", () => {
+  assert.equal(renderProactive({ kind: "SCENE_SUMMARY", items: [] }).text, "Kujh khaas nahi");
+  assert.equal(renderProactive({ kind: "SCENE_SUMMARY", items: [] }, "hi").text, "Kuch khaas nahi");
+  assert.equal(renderProactive({ kind: "SCENE_SUMMARY", items: [] }, "en").text, "Nothing notable");
+});
+
+test("scene updates lead with Hor/Aur/Also", () => {
+  const ev: ProactiveEvent = {
+    kind: "SCENE_UPDATE",
+    items: [
+      { kind: "object", label: "phone", clock: 3 },
+      { kind: "object", label: "thaila", clock: 4 },
+    ],
+  };
+  assert.equal(renderProactive(ev).text, "Hor: phone 3 o'clock, thaila 4 o'clock");
+  assert.equal(renderProactive(ev, "en").text, "Also: phone 3 o'clock, thaila 4 o'clock");
+  const single: ProactiveEvent = {
+    kind: "SCENE_UPDATE",
+    items: [{ kind: "object", label: "phone", clock: 3 }],
+  };
+  assert.equal(renderProactive(single, "hi").text, "Aur: phone 3 o'clock");
+});
+
+test("person lines use clock hours when x and hfov are available", () => {
+  const ev: ProactiveEvent = {
+    kind: "PERSON_ARRIVED",
+    count: 1,
+    people: [{ position: "centre", distance: "near", gender: "man", age_range: "30", x: 0.8 }],
+  };
+  assert.equal(renderProactive(ev, "pa", 100).text, "Ik banda, around 30, 1 o'clock");
+  assert.equal(renderProactive(ev, "en", 100).text, "A man, around 30, 1 o'clock");
+  const multi: ProactiveEvent = {
+    kind: "PERSON_ARRIVED",
+    count: 2,
+    people: [
+      { position: "left", distance: "near", x: 0.2 },
+      { position: "right", distance: "near", x: 0.9 },
+    ],
+  };
+  assert.equal(renderProactive(multi, "pa", 100).text, "Do log, 11 o'clock");
+});
+
+test("person lines keep rough words without coordinates", () => {
+  const ev: ProactiveEvent = {
+    kind: "PERSON_ARRIVED",
+    count: 1,
+    people: [{ position: "centre", distance: "near", gender: "man", age_range: "30" }],
+  };
+  assert.equal(renderProactive(ev, "pa", 100).text, "Ik banda, around 30, counter te");
+  const noHfov: ProactiveEvent = {
+    kind: "PERSON_ARRIVED",
+    count: 1,
+    people: [{ position: "right", distance: "far", x: 0.9 }],
+  };
+  assert.equal(renderProactive(noHfov).text, "Ik banda, right side door");
+});
+
+test("kaun hai answers use clocks when available", () => {
+  assert.equal(
+    summarizePeople([{ name: "Ravi", position: "left", distance: "near", x: 0.9 }], "pa", 100),
+    "Ravi 1 o'clock"
+  );
+  assert.equal(
+    summarizePeople([{ position: "centre", distance: "far", gender: "woman", x: 0.1 }], "pa", 100),
+    "Ik aurat, 11 o'clock"
+  );
+  assert.equal(
+    summarizePeople([{ name: "Ravi", position: "left", distance: "near" }]),
+    "Ravi left side"
+  );
+});
+
+test("look-around off answers Theek hai", () => {
+  assert.equal(renderOkay("pa"), "Theek hai");
+  assert.equal(renderOkay("hi"), "Theek hai");
+  assert.equal(renderOkay("en"), "Okay");
+  assert.equal(renderOkay(), "Theek hai");
 });

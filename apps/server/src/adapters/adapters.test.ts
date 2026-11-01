@@ -12,9 +12,12 @@ import { MockVisionTriage } from "./mocks.js";
 import { createAdapters, metaReasoningEffortFromEnv } from "./factory.js";
 import {
   OpenAICompatTriage,
+  SCENE_SYSTEM_PROMPT,
   TRIAGE_SYSTEM_PROMPT,
+  parseSceneTriage,
   parseTriageResult,
   sanitizeLabel,
+  sceneMaxTokensFromEnv,
   triageMaxTokensFromEnv,
   type DebugFile,
 } from "./openaiCompat.js";
@@ -274,4 +277,118 @@ test("debug file is written even when parsing fails", async () => {
 test("sanitizeLabel keeps filenames safe", () => {
   assert.equal(sanitizeLabel("500_03_512"), "500_03_512");
   assert.equal(sanitizeLabel("../../etc/x"), ".._.._etc_x");
+});
+
+test("scene prompt forces the SceneTriage JSON shape", () => {
+  assert.match(SCENE_SYSTEM_PROMPT, /return ONLY a JSON object/);
+  for (const key of ['"notes"', '"people"', '"objects"', '"label"', '"salience"', '"x"']) {
+    assert.ok(SCENE_SYSTEM_PROMPT.includes(key), `prompt mentions ${key}`);
+  }
+  assert.match(SCENE_SYSTEM_PROMPT, /at most 8/);
+  assert.match(SCENE_SYSTEM_PROMPT, /never name anyone/i);
+});
+
+test("scene parser accepts a full valid answer", () => {
+  const r = parseSceneTriage(
+    '{"notes":[{"denomination":100,"confidence":0.7}],"people":[{"position":"right","distance":"near","gender":"woman","x":0.8,"y":0.4}],"objects":[{"label":"darwaza","x":0.8,"y":0.5,"distance":"mid","salience":3}]}'
+  );
+  assert.equal(r.notes[0]?.denomination, 100);
+  assert.equal(r.people[0]?.x, 0.8);
+  assert.equal(r.objects.length, 1);
+  assert.equal(r.objects[0]?.label, "darwaza");
+  assert.equal(r.objects[0]?.salience, 3);
+});
+
+test("scene parser clamps coordinates, drops bad objects, caps at 8", () => {
+  const r = parseSceneTriage(
+    '{"notes":[],"people":[],"objects":[' +
+      '{"label":"  phone  ","x":1.5,"y":-0.2,"distance":"near","salience":2},' +
+      '{"label":"","x":0.5,"y":0.5,"distance":"near","salience":2},' +
+      '{"label":"bad-x","x":"left","y":0.5,"distance":"near","salience":2},' +
+      '{"label":"bad-sal","x":0.5,"y":0.5,"distance":"near","salience":5},' +
+      '{"label":"bad-dist","x":0.5,"y":0.5,"distance":"close","salience":2},' +
+      '"not-an-object",' +
+      '{"x":0.5,"y":0.5,"distance":"near","salience":2}' +
+      "]}"
+  );
+  assert.equal(r.objects.length, 1);
+  assert.deepEqual(r.objects[0], { label: "phone", x: 1, y: 0, distance: "near", salience: 2 });
+
+  const many = Array.from(
+    { length: 10 },
+    (_, i) => `{"label":"o${i}","x":0.5,"y":0.5,"distance":"mid","salience":2}`
+  );
+  const capped = parseSceneTriage(`{"notes":[],"people":[],"objects":[${many.join(",")}]}`);
+  assert.equal(capped.objects.length, 8);
+  assert.equal(capped.objects[0]?.label, "o0");
+  assert.equal(capped.objects[7]?.label, "o7");
+});
+
+test("scene parser stays strict on notes/people/objects shapes", () => {
+  assert.deepEqual(parseSceneTriage("{}"), { notes: [], people: [], objects: [] });
+  assert.throws(() => parseSceneTriage("no json here"), /not JSON/);
+  assert.throws(
+    () => parseSceneTriage('{"notes":[{"denomination":5,"confidence":0.5}],"people":[],"objects":[]}'),
+    /denomination/
+  );
+  assert.throws(
+    () => parseSceneTriage('{"notes":[],"people":[{"position":"middle","distance":"near"}],"objects":[]}'),
+    /position/
+  );
+  assert.throws(() => parseSceneTriage('{"notes":[],"people":[],"objects":{}}'), /must be an array/);
+});
+
+test("base parser preserves person coordinates and drops bad ones", () => {
+  const r = parseTriageResult(
+    '{"notes":[],"people":[{"position":"left","distance":"near","x":0.2,"y":1.4},{"position":"right","distance":"near","x":"right"}]}'
+  );
+  assert.equal(r.people[0]?.x, 0.2);
+  assert.equal(r.people[0]?.y, 1);
+  assert.equal(r.people[1]?.x, undefined);
+  assert.equal(r.people[1]?.position, "right");
+});
+
+test("mock triageScene cycles its scene script and clones results", async () => {
+  const mock = new MockVisionTriage(undefined, [
+    { notes: [], people: [], objects: [{ label: "kursi", x: 0.5, y: 0.5, distance: "mid", salience: 2 }] },
+    { notes: [], people: [], objects: [] },
+  ]);
+  const first = await mock.triageScene(Buffer.alloc(0));
+  assert.equal(first.objects[0]?.label, "kursi");
+  first.objects[0]!.label = "MUTATED"; // must not leak into later calls
+  assert.equal((await mock.triageScene(Buffer.alloc(0))).objects.length, 0);
+  assert.equal((await mock.triageScene(Buffer.alloc(0))).objects[0]?.label, "kursi");
+  const fallback = new MockVisionTriage();
+  assert.equal((await fallback.triageScene(Buffer.alloc(0))).objects.length, 1);
+});
+
+test("scene max tokens default to 800 and SCENE_MAX_TOKENS overrides", () => {
+  withEnv({ SCENE_MAX_TOKENS: undefined }, () => assert.equal(sceneMaxTokensFromEnv(), 800));
+  withEnv({ SCENE_MAX_TOKENS: "123" }, () => assert.equal(sceneMaxTokensFromEnv(), 123));
+  withEnv({ SCENE_MAX_TOKENS: "nope" }, () => assert.throws(() => sceneMaxTokensFromEnv(), /positive integer/));
+  withEnv({ PROVIDER: "meta", META_API_KEY: "fake", SCENE_MAX_TOKENS: "900" }, () => {
+    const t = createAdapters().triage as OpenAICompatTriage;
+    assert.equal(t.sceneMaxTokens, 900);
+    assert.equal(t.maxTokens, 400);
+  });
+});
+
+test("triageScene sends the scene prompt with the scene budget", async () => {
+  const { client, calls } = stubClient([
+    {
+      content:
+        '{"notes":[],"people":[],"objects":[{"label":"kursi","x":0.5,"y":0.5,"distance":"mid","salience":2}]}',
+      finishReason: "stop",
+    },
+  ]);
+  const t = new OpenAICompatTriage({ baseURL: "http://x", model: "m", apiKey: "k" }, client);
+  const r = await t.triageScene(Buffer.alloc(0));
+  assert.equal(r.objects[0]?.label, "kursi");
+  assert.equal(calls[0].max_tokens, 800);
+  const text = (
+    ((calls[0].messages as Array<Record<string, unknown>>)[0].content as Array<Record<string, unknown>>)[0]
+      .text as string
+  );
+  assert.ok(text.includes('"salience"'), "scene call carries the scene prompt");
+  assert.ok(text.includes("at most 8"), "scene prompt mentions the object cap");
 });
