@@ -11,9 +11,14 @@ import { providerFromEnv } from "./index.js";
 import { MockVisionTriage } from "./mocks.js";
 import { createAdapters, metaReasoningEffortFromEnv } from "./factory.js";
 import {
+  FIND_MAX_TOKENS,
+  OpenAICompatFinder,
   OpenAICompatTriage,
   SCENE_SYSTEM_PROMPT,
   TRIAGE_SYSTEM_PROMPT,
+  buildFindPrompt,
+  findMaxTokensFromEnv,
+  parseLocateResult,
   parseSceneTriage,
   parseTriageResult,
   sanitizeLabel,
@@ -21,6 +26,7 @@ import {
   triageMaxTokensFromEnv,
   type DebugFile,
 } from "./openaiCompat.js";
+import { MockObjectFinder } from "./mocks.js";
 
 test("mock triage cycles its script and clones results", async () => {
   const mock = new MockVisionTriage([
@@ -391,4 +397,90 @@ test("triageScene sends the scene prompt with the scene budget", async () => {
   );
   assert.ok(text.includes('"salience"'), "scene call carries the scene prompt");
   assert.ok(text.includes("at most 8"), "scene prompt mentions the object cap");
+});
+
+test("find prompt names the noun and the locate JSON shape", () => {
+  const prompt = buildFindPrompt("Kainchi");
+  assert.ok(prompt.includes("Kainchi"));
+  assert.match(prompt, /return ONLY a JSON object/);
+  for (const key of ['"found"', '"x"', '"y"', '"distance"', '"confidence"']) {
+    assert.ok(prompt.includes(key), `prompt mentions ${key}`);
+  }
+  assert.match(prompt, /Never guess/);
+});
+
+test("locate parser accepts a hit, clamps, fails closed on junk", () => {
+  assert.deepEqual(
+    parseLocateResult('{"found":true,"x":0.9,"y":0.6,"distance":"near","confidence":0.9}'),
+    { x: 0.9, y: 0.6, distance: "near", confidence: 0.9 }
+  );
+  assert.deepEqual(
+    parseLocateResult('{"found":true,"x":1.4,"y":-0.2,"distance":"mid","confidence":2}'),
+    { x: 1, y: 0, distance: "mid", confidence: 1 }
+  );
+  for (const bad of [
+    '{"found":false}',
+    '{"found":true,"x":0.5,"y":0.5,"distance":"near"}', // no confidence
+    '{"found":true,"x":0.5,"y":0.5,"distance":"close","confidence":0.9}',
+    '{"found":true,"x":"left","y":0.5,"distance":"near","confidence":0.9}',
+    "no json here",
+    "{}",
+  ]) {
+    assert.equal(parseLocateResult(bad), null, bad);
+  }
+});
+
+test("finder locate round-trips one JSON call with the find budget", async () => {
+  const { client, calls } = stubClient([
+    { content: '{"found":true,"x":0.9,"y":0.6,"distance":"near","confidence":0.9}', finishReason: "stop" },
+  ]);
+  const f = new OpenAICompatFinder({ baseURL: "http://x", model: "m", apiKey: "k" }, client);
+  const loc = await f.locate(Buffer.alloc(0), "Kainchi");
+  assert.deepEqual(loc, { x: 0.9, y: 0.6, distance: "near", confidence: 0.9 });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].max_tokens, FIND_MAX_TOKENS);
+  const boxes = await f.find(Buffer.alloc(0), "Kainchi");
+  assert.equal(boxes.length, 1);
+  assert.ok(Math.abs(boxes[0].x + boxes[0].w / 2 - 0.9) < 1e-9, "box centres on the point");
+});
+
+test("finder falls back on json_object rejection, misses fail closed", async () => {
+  const { client } = stubClient([
+    { error: "400 Unknown parameter: 'response_format'" },
+    { content: '{"found":false}', finishReason: "stop" },
+  ]);
+  const f = new OpenAICompatFinder({ baseURL: "http://x", model: "m", apiKey: "k" }, client);
+  assert.equal(await f.locate(Buffer.alloc(0), "Kainchi"), null);
+  assert.deepEqual(await f.find(Buffer.alloc(0), "Kainchi"), []);
+});
+
+test("find max tokens default to 300 and FIND_MAX_TOKENS overrides", () => {
+  withEnv({ FIND_MAX_TOKENS: undefined }, () => assert.equal(findMaxTokensFromEnv(), 300));
+  withEnv({ FIND_MAX_TOKENS: "210" }, () => assert.equal(findMaxTokensFromEnv(), 210));
+  withEnv({ FIND_MAX_TOKENS: "nope" }, () => assert.throws(() => findMaxTokensFromEnv(), /positive integer/));
+});
+
+test("factory wires mock finder for mock, Spark finder otherwise", () => {
+  withEnv({ PROVIDER: "mock" }, () => {
+    assert.ok(createAdapters().finder instanceof MockObjectFinder);
+  });
+  withEnv({ PROVIDER: "meta", META_API_KEY: "fake" }, () => {
+    assert.ok(createAdapters().finder instanceof OpenAICompatFinder);
+  });
+  withEnv({ PROVIDER: "local" }, () => {
+    assert.ok(createAdapters().finder instanceof OpenAICompatFinder);
+  });
+});
+
+test("mock finder cycles its locate script, misses by default", async () => {
+  const mock = new MockObjectFinder([{ x: 0.5, y: 0.5, distance: "mid", confidence: 0.7 }, null]);
+  assert.deepEqual(await mock.locate(Buffer.alloc(0), "Kainchi"), {
+    x: 0.5,
+    y: 0.5,
+    distance: "mid",
+    confidence: 0.7,
+  });
+  assert.equal(await mock.locate(Buffer.alloc(0), "Kainchi"), null);
+  assert.equal(await mock.locate(Buffer.alloc(0), "Kainchi"), null); // last repeats
+  assert.equal(await new MockObjectFinder().locate(Buffer.alloc(0), "Kainchi"), null);
 });

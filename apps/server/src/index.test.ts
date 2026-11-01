@@ -5,11 +5,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WebSocket } from "ws";
+import sharp from "sharp";
 import { startServer } from "./index.js";
 import { MockAgentBrain } from "./adapters/agent.js";
 import type { AgentBrain } from "./adapters/agent.js";
-import { MockVisionTriage } from "./adapters/mocks.js";
-import type { NamedTriage } from "./adapters/index.js";
+import { MockObjectFinder, MockVisionTriage } from "./adapters/mocks.js";
+import type { NamedTriage, ObjectFinder } from "./adapters/index.js";
 import type { SceneTriage } from "./protocol.js";
 import { PeopleStore } from "./faces/store.js";
 import type { DetectedFace, FaceEmbedder } from "./faces/embed.js";
@@ -32,7 +33,8 @@ class FixedEmbedder implements FaceEmbedder {
 async function startTestServer(
   embedder?: FaceEmbedder,
   agent?: AgentBrain,
-  triage?: NamedTriage
+  triage?: NamedTriage,
+  finder?: ObjectFinder
 ): Promise<{
   port: number;
   done: () => Promise<void>;
@@ -41,7 +43,7 @@ async function startTestServer(
   // Stub faces for determinism: a running sidecar must not change test behaviour.
   process.env.FACES = "stub";
   const store = new PeopleStore(":memory:");
-  const server = await startServer(0, { store, embedder, agent, triage });
+  const server = await startServer(0, { store, embedder, agent, triage, finder });
   return {
     port: server.port,
     done: async () => {
@@ -545,6 +547,121 @@ test("voice enrollment over WS: remember -> consent -> saved -> known arrival", 
       const arrival = known.find((m) => m.type === "speak" && m.kind === "people");
       assert.equal(arrival?.text, "Ravi ਆ ਗਿਆ, 11 o'clock");
       assert.equal(arrival?.priority, "P2");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("utterance find action: capture on the current lens -> clock speak", async () => {
+  const agent = new MockAgentBrain([
+    { say: null, positions: [], actions: [{ tool: "find", noun: "Kainchi" }] },
+  ]);
+  const finder = new MockObjectFinder([{ x: 0.9, y: 0.6, distance: "near", confidence: 0.9 }]);
+  const t = await startTestServer(undefined, agent, undefined, finder);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "kainchi kithe hai");
+      const early = await collectUntil(ws, (m) => m.type === "capture_now", 2000);
+      const capture = early.find((m) => m.type === "capture_now") as {
+        reqId: string;
+        lens?: string;
+      };
+      assert.ok(capture?.reqId);
+      assert.equal(capture.lens, undefined); // find uses the current lens
+      sendFrame(ws, { reqId: capture.reqId, lens: "main", hfovDeg: 100 });
+      const late = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "answer", 2000);
+      const answer = late.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(answer?.text, "Kainchi, 1 o'clock, nede");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("utterance read captures on main; hor continues the label", async () => {
+  const full = Array.from({ length: 25 }, (_, i) => `w${i + 1}`).join(" ");
+  const agent = new MockAgentBrain([
+    { say: "w1 w2 w3 w4 w5 w6 w7 w8 hor?", positions: [], actions: [], readText: full },
+  ]);
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "eh padh");
+      const early = await collectUntil(ws, (m) => m.type === "capture_now", 2000);
+      const capture = early.find((m) => m.type === "capture_now") as {
+        reqId: string;
+        lens?: string;
+      };
+      assert.equal(capture?.lens, "main"); // reads use the sharper lens
+      sendFrame(ws, { reqId: capture.reqId, lens: "main", hfovDeg: 66 });
+      const late = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "answer", 2000);
+      const answer = late.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(answer?.text, "w1 w2 w3 w4 w5 w6 w7 w8 hor?");
+
+      // Continuation is a fast path: no new capture, next 20-word chunk.
+      sendUtterance(ws, "hor");
+      const cont = await collectFor(ws, 500);
+      const chunk = cont.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(chunk?.text, "w21 w22 w23 w24 w25");
+      assert.ok(cont.every((m) => m.type !== "capture_now"), "continuation needs no frame");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("ultra-wide frames reach the cash prompt as a centre crop", async () => {
+  const triage = new MockVisionTriage();
+  const t = await startTestServer(undefined, undefined, triage);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      const jpeg = await sharp({
+        create: { width: 100, height: 80, channels: 3, background: { r: 200, g: 100, b: 50 } },
+      })
+        .jpeg()
+        .toBuffer();
+      ws.send(
+        JSON.stringify({
+          type: "frame",
+          jpegBase64: jpeg.toString("base64"),
+          width: 100,
+          height: 80,
+          lens: "ultrawide",
+          ts: Date.now(),
+        })
+      );
+      await nextMessage(ws); // cash speak proves the frame was triaged
+      assert.equal(triage.imgs.length, 1);
+      const cropped = await sharp(triage.imgs[0]).metadata();
+      assert.equal(cropped.width, 60);
+      assert.equal(cropped.height, 48);
+
+      // Main-lens frames pass through untouched.
+      ws.send(
+        JSON.stringify({
+          type: "frame",
+          jpegBase64: jpeg.toString("base64"),
+          width: 100,
+          height: 80,
+          lens: "main",
+          ts: Date.now(),
+        })
+      );
+      await collectFor(ws, 300);
+      assert.equal(triage.imgs.length, 2);
+      const full = await sharp(triage.imgs[1]).metadata();
+      assert.equal(full.width, 100);
+      assert.equal(full.height, 80);
     } finally {
       ws.close();
     }

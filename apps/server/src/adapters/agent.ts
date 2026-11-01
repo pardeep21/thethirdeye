@@ -37,6 +37,8 @@ export interface AgentOutput {
   say: string | null;
   positions: AgentPosition[];
   actions: AgentAction[];
+  /** Full label text when reading (key text first); "hor" continues it. */
+  readText?: string;
 }
 
 export interface AgentBrain {
@@ -88,7 +90,11 @@ export function parseAgentOutput(text: string): AgentOutput {
   if (!Array.isArray(actionsRaw)) throw new Error("agent.actions must be an array");
   const actions: AgentAction[] = actionsRaw.map((a, i) => parseAction(a, i));
 
-  return { say, positions, actions };
+  const readText = root.readText === undefined ? undefined : root.readText;
+  if (readText !== undefined && typeof readText !== "string") {
+    throw new Error("agent.readText must be a string");
+  }
+  return readText === undefined ? { say, positions, actions } : { say, positions, actions, readText };
 }
 
 function parseAction(a: unknown, i: number): AgentAction {

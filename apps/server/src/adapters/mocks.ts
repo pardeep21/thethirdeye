@@ -3,6 +3,7 @@
 import type { Box, FaceHit, SceneTriage, TriageResult } from "../protocol.js";
 import type {
   FaceMatcher,
+  LocatedObject,
   MatchedFace,
   NamedTriage,
   ObjectFinder,
@@ -25,13 +26,16 @@ export class MockVisionTriage implements NamedTriage {
   readonly name = "mock";
   private i = 0;
   private si = 0;
+  /** Every cash-triage input received, for crop/wiring tests. */
+  readonly imgs: Buffer[] = [];
 
   constructor(
     private readonly script: TriageResult[] = [DEFAULT_MOCK_TRIAGE],
     private readonly sceneScript: SceneTriage[] = [DEFAULT_MOCK_SCENE]
   ) {}
 
-  async triage(_img: Buffer): Promise<TriageResult> {
+  async triage(img: Buffer): Promise<TriageResult> {
+    this.imgs.push(img);
     const r = this.script[this.i % this.script.length] ?? DEFAULT_MOCK_TRIAGE;
     this.i++;
     return structuredClone(r);
@@ -59,8 +63,18 @@ export class MockVisionAnswer implements VisionAnswer {
 }
 
 export class MockObjectFinder implements ObjectFinder {
+  private calls = 0;
+
+  /** Scripted locate answers, one per call (last repeats; default: miss). */
+  constructor(private readonly locateScript: Array<LocatedObject | null> = []) {}
+
   async find(_img: Buffer, _noun: string): Promise<Box[]> {
     return [{ x: 0.6, y: 0.5, w: 0.2, h: 0.2 }];
+  }
+
+  async locate(_img: Buffer, _noun: string): Promise<LocatedObject | null> {
+    const idx = Math.min(this.calls++, Math.max(0, this.locateScript.length - 1));
+    return this.locateScript[idx] ?? null;
   }
 }
 

@@ -2,7 +2,7 @@
 // tricky overlaps (bol vs bolo, short-only mute, empty-noun find).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { routeIntent } from "./intent.js";
+import { isBareMore, routeIntent } from "./intent.js";
 
 test("describe across languages and scripts", () => {
   assert.equal(routeIntent("Ki hai saamne?").kind, "describe");
@@ -92,6 +92,15 @@ test("more pages the look-around scene", () => {
   assert.equal(routeIntent("aur kya hai").kind, "more");
   assert.equal(routeIntent("ਹੋਰ ਕੀ ਹੈ").kind, "more");
   assert.equal(routeIntent("और क्या है").kind, "more");
+});
+
+test("bare hor continues a read, scene questions do not", () => {
+  for (const t of ["hor", "hor sunao", "more", "aur batao", "ਹੋਰ", "और"]) {
+    assert.equal(isBareMore(t), true, t);
+  }
+  for (const t of ["hor ki hai", "hor kya hai", "hor kaun hai", "hor kithe", "hor dikhao", "ki hai saamne"]) {
+    assert.equal(isBareMore(t), false, t);
+  }
 });
 
 test("more yields to find, who and read", () => {

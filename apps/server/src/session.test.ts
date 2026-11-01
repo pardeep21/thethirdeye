@@ -2,7 +2,7 @@
 // perception mapping, and p50/p95 over the rolling window.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { HISTORY_MAX_TURNS, Session, sceneFromPerception } from "./session.js";
+import { HISTORY_MAX_TURNS, Session, readChunk, sceneFromPerception } from "./session.js";
 import type { SceneTriage } from "./protocol.js";
 import { UtteranceStats } from "./stats.js";
 
@@ -107,6 +107,21 @@ test("sceneFromPerception renders clocks from x and carries objects", () => {
   assert.equal(scene.people[0]?.ref, "S1");
   assert.deepEqual(scene.objects, [{ label: "darwaza", clock: 1, distance: "mid" }]);
   assert.equal(scene.lookAround, true);
+});
+
+test("readChunk pages a label in 20-word slices", () => {
+  const words = Array.from({ length: 45 }, (_, i) => `w${i + 1}`).join(" ");
+  const first = readChunk(words, 0);
+  assert.equal(first?.chunk.split(" ").length, 20);
+  assert.equal(first?.hasMore, true);
+  const second = readChunk(words, 1);
+  assert.ok(second?.chunk.startsWith("w21"));
+  assert.equal(second?.hasMore, true);
+  const third = readChunk(words, 2);
+  assert.equal(third?.chunk.split(" ").length, 5);
+  assert.equal(third?.hasMore, false);
+  assert.equal(readChunk(words, 3), null);
+  assert.equal(readChunk("  ", 0), null);
 });
 
 test("stats snapshot percentiles over samples", () => {

@@ -20,6 +20,7 @@ import {
   type SpeakMessage,
 } from "./protocol.js";
 import { LatestFrameStore } from "./store.js";
+import { centreCrop, uwCashCropFromEnv } from "./images.js";
 import { createAdapters, providerFromEnv, type NamedTriage } from "./adapters/factory.js";
 import type { AgentBrain, AgentOutput } from "./adapters/agent.js";
 import { DecisionEngine, type DecisionEvent } from "./decision.js";
@@ -29,19 +30,26 @@ import {
   renderFind,
   renderOkay,
   renderProactive,
+  renderReadMore,
   summarizePeople,
   type PersonBits,
 } from "./phrases.js";
 import { renderPositions } from "./clock.js";
 import { applyAgentActions } from "./actions.js";
-import { Session, sceneFromPerception, type SessionFrame } from "./session.js";
+import {
+  READ_FRESH_MS,
+  Session,
+  readChunk,
+  sceneFromPerception,
+  type SessionFrame,
+} from "./session.js";
 import { UtteranceStats } from "./stats.js";
-import { routeIntent } from "./intent.js";
+import { isBareMore, routeIntent } from "./intent.js";
 import { PeopleStore } from "./faces/store.js";
 import type { FaceEmbedder } from "./faces/embed.js";
 import { checkEnrollFace } from "./faces/quality.js";
 import { FaceTracker } from "./faces/tracker.js";
-import type { MatchedFace } from "./adapters/index.js";
+import type { MatchedFace, ObjectFinder } from "./adapters/index.js";
 import { defaultDbPath, facesEveryNFromEnv, selectEmbedder, shouldRunFaces } from "./faces/index.js";
 
 export interface ServerHandles {
@@ -56,6 +64,8 @@ export interface ServerOpts {
   agent?: AgentBrain;
   /** Override vision triage (tests inject a scripted scene mock). */
   triage?: NamedTriage;
+  /** Override the object finder (tests inject a scripted mock). */
+  finder?: ObjectFinder;
 }
 
 /** How long an utterance waits for its capture_now frame (prompt 02: 800 ms). */
@@ -122,8 +132,10 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
   const embedder = opts?.embedder ?? (await selectEmbedder());
   const adapters = createAdapters(provider, { store: people, embedder });
   const facesEveryN = facesEveryNFromEnv();
+  const uwCrop = uwCashCropFromEnv();
   const agent = opts?.agent ?? adapters.agent;
   const triage = opts?.triage ?? adapters.triage;
+  const finder = opts?.finder ?? adapters.finder;
   const frames = new LatestFrameStore();
   const stats = new UtteranceStats();
   const captureTimeoutMs = captureTimeoutFromEnv();
@@ -268,6 +280,19 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       pushState();
     }
 
+    /**
+     * Bare "hor" continues a fresh label read with unspoken words, else
+     * null (the caller falls through to scene paging or the agent).
+     */
+    function readContinuation(text: string): string | null {
+      const last = session.lastRead;
+      if (!last || !isBareMore(text) || Date.now() - last.ts > READ_FRESH_MS) return null;
+      const next = readChunk(last.text, last.page);
+      if (!next) return null;
+      last.page++;
+      return next.hasMore ? `${next.chunk} ${renderReadMore(session.lang)}` : next.chunk;
+    }
+
     /** "Hor ki hai?": the next unmentioned scene page, or nothing notable. */
     function answerMoreText(): string {
       const items = narrator.requestMore();
@@ -277,11 +302,25 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       return renderProactive({ kind: "SCENE_UPDATE", items }, session.lang).text;
     }
 
+    /**
+     * Cash-prompt input: the centre 60% when the lens is ultra-wide
+     * (notes at counter distance sit central; fail-open to full frame).
+     */
+    async function cashInput(jpeg: Buffer, lens: "main" | "ultrawide" | undefined): Promise<Buffer> {
+      if (!uwCrop || lens !== "ultrawide") return jpeg;
+      try {
+        return await centreCrop(jpeg);
+      } catch (err) {
+        console.error("uw crop failed, using full frame:", err instanceof Error ? err.message : err);
+        return jpeg;
+      }
+    }
+
     /** Fresh cash read; shared by the howmuch fast path and cash_check. */
     async function cashRead(): Promise<string> {
       const frame = frames.get();
       if (!frame) return renderProactive({ kind: "NOTE_UNSURE" }, session.lang).text;
-      const fresh = await triage.triage(frame.jpeg);
+      const fresh = await triage.triage(await cashInput(frame.jpeg, frame.lens));
       const top = fresh.notes[0];
       if (top && top.denomination !== null && top.confidence >= 0.5) {
         return renderProactive(
@@ -381,14 +420,25 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         console.log(`utterance fast-path (howmuch) total=${Date.now() - tRx}ms`);
         return;
       }
-      // "Hor ki hai?" pages the scene when look-around has one; otherwise
-      // the agent answers from a fresh frame like any other question.
-      if (intent.kind === "more" && session.lookAround && narrator.hasScene()) {
-        engine.cancel();
-        engine.answer(answerMoreText(), session.lang);
-        sendDrained();
-        console.log(`utterance fast-path (more) total=${Date.now() - tRx}ms`);
-        return;
+      // Bare "hor" continues a fresh label read; "hor ki hai?" pages
+      // the scene when look-around has one; otherwise the agent answers
+      // from a fresh frame like any other question.
+      if (intent.kind === "more") {
+        const cont = readContinuation(text);
+        if (cont) {
+          engine.cancel();
+          engine.answer(cont, session.lang);
+          sendDrained();
+          console.log(`utterance fast-path (read-more) total=${Date.now() - tRx}ms`);
+          return;
+        }
+        if (session.lookAround && narrator.hasScene()) {
+          engine.cancel();
+          engine.answer(answerMoreText(), session.lang);
+          sendDrained();
+          console.log(`utterance fast-path (more) total=${Date.now() - tRx}ms`);
+          return;
+        }
       }
 
       // Agent path: fresh frame, then one model call with memory + scene.
@@ -396,7 +446,8 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       pushState();
       send({ type: "earcon", name: "thinking" });
       const reqId = `u${++utterSeq}`;
-      send({ type: "capture_now", reqId });
+      // Reads use the sharper main lens even in look-around.
+      send(intent.kind === "read" ? { type: "capture_now", reqId, lens: "main" } : { type: "capture_now", reqId });
       const capture = await waitForCapture(reqId);
       const tFrame = Date.now();
 
@@ -435,7 +486,12 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         narrator,
         people: { store: people, tracker, faces: adapters.faces },
         utterance: text,
+        find: { finder, frame: image },
       });
+      // A label read: the model spoke chunk 0, "hor" pages from chunk 1.
+      if (output.readText !== undefined && output.readText.trim()) {
+        session.lastRead = { text: output.readText.trim(), page: 1, ts: Date.now() };
+      }
       const rendered =
         output.say === null ? null : renderPositions(output.say, output.positions, usedHfov, session.lang);
       // People tools speak their own deterministic line; the model's say
@@ -474,10 +530,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             engine.answer(renderOkay(session.lang), session.lang);
           }
           return;
-        case "more":
+        case "more": {
           engine.cancel();
-          engine.answer(answerMoreText(), session.lang);
+          engine.answer(readContinuation(transcript) ?? answerMoreText(), session.lang);
           return;
+        }
         case "unknown":
           console.log(`ignoring unparseable command: ${transcript}`);
           return;
@@ -496,12 +553,22 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             return;
           }
           engine.cancel();
-          engine.answer(await adapters.answer.read(frame.jpeg), session.lang);
+          const full = (await adapters.answer.read(frame.jpeg)).trim();
+          const first = readChunk(full, 0);
+          if (!first) {
+            engine.answer(renderAgentUnsure(session.lang), session.lang);
+            return;
+          }
+          session.lastRead = { text: full, page: 1, ts: Date.now() };
+          engine.answer(
+            first.hasMore ? `${first.chunk} ${renderReadMore(session.lang)}` : first.chunk,
+            session.lang
+          );
           return;
         }
         case "find": {
           engine.cancel();
-          const box = frame ? ((await adapters.finder.find(frame.jpeg, intent.noun))[0] ?? null) : null;
+          const box = frame ? ((await finder.find(frame.jpeg, intent.noun))[0] ?? null) : null;
           engine.answer(renderFind(intent.noun, box, session.lang), session.lang);
           return;
         }
@@ -531,7 +598,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       if (isFrameMessage(msg)) {
         const jpeg = Buffer.from(msg.jpegBase64, "base64");
         const hfovDeg = msg.hfovDeg ?? DEFAULT_HFOV_DEG;
-        frames.set({ jpeg, width: msg.width, height: msg.height, ts: msg.ts, receivedAt: Date.now() });
+        frames.set({ jpeg, width: msg.width, height: msg.height, ts: msg.ts, receivedAt: Date.now(), lens: msg.lens });
         const sessionFrame: SessionFrame = { jpeg, hfovDeg, ts: msg.ts, receivedAt: Date.now() };
         session.lastFrame = sessionFrame;
         if (msg.reqId) pendingCaptures.get(msg.reqId)?.(sessionFrame);
@@ -541,7 +608,9 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           // Faces run every Nth frame (FACES_EVERY_N; slow machines skip).
           const runFaces = shouldRunFaces(frameNo++, facesEveryN);
           const [result, matched] = await Promise.all([
-            session.lookAround ? triage.triageScene(jpeg) : triage.triage(jpeg),
+            session.lookAround
+              ? triage.triageScene(jpeg)
+              : triage.triage(await cashInput(jpeg, msg.lens)),
             runFaces ? adapters.faces.matchDetailed(jpeg) : Promise.resolve([] as MatchedFace[]),
           ]);
           const nowMs = Date.now();

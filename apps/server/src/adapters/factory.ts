@@ -1,13 +1,18 @@
 // Provider factory: PROVIDER=mock|meta|openrouter|openai|local.
 // Only mock works without keys; the rest build the OpenAI-compatible client
-// from env. Finder/STT/faces stay mock until their real adapters land
-// (M4 SAM/STT wiring, M5 faces).
+// from env. STT stays mock until its real adapter lands; the finder is
+// Spark-backed for real providers (07) and scriptable-mock for mock.
 import type {
   AdapterSet,
+  ObjectFinder,
   ProviderName,
 } from "./index.js";
 import { providerFromEnv } from "./index.js";
-import { sceneMaxTokensFromEnv, triageMaxTokensFromEnv } from "./openaiCompat.js";
+import {
+  findMaxTokensFromEnv,
+  sceneMaxTokensFromEnv,
+  triageMaxTokensFromEnv,
+} from "./openaiCompat.js";
 
 export { providerFromEnv };
 export type * from "./index.js";
@@ -31,7 +36,7 @@ import {
   OpenAICompatAgentBrain,
 } from "./agent.js";
 import { PeopleStore } from "../faces/store.js";
-import { OpenAICompatAnswer, OpenAICompatTriage } from "./openaiCompat.js";
+import { OpenAICompatAnswer, OpenAICompatFinder, OpenAICompatTriage } from "./openaiCompat.js";
 
 function needEnv(name: string): string {
   const v = process.env[name];
@@ -95,6 +100,46 @@ function createAgentBrain(provider: ProviderName, deps?: AdapterDeps): AgentBrai
   }
 }
 
+/** Endpoint + model + key for the Spark-backed finder (mirrors triage). */
+function finderOpts(
+  provider: ProviderName,
+  deps?: AdapterDeps
+): { baseURL: string; model: string; apiKey: string; reasoningEffort?: string; debugDir?: string } {
+  const common = { maxTokens: findMaxTokensFromEnv(), debugDir: deps?.debugDir };
+  switch (provider) {
+    case "meta":
+      return {
+        baseURL: process.env.META_BASE_URL ?? "https://api.meta.ai/v1",
+        model: process.env.META_MODEL ?? "muse-spark-1.3",
+        apiKey: needEnv("META_API_KEY"),
+        reasoningEffort: metaReasoningEffortFromEnv(),
+        ...common,
+      };
+    case "openrouter":
+      return {
+        baseURL: "https://openrouter.ai/api/v1",
+        model: process.env.OPENROUTER_MODEL ?? "meta/muse-spark-1.3",
+        apiKey: needEnv("OPENROUTER_API_KEY"),
+        ...common,
+      };
+    case "openai":
+    case "local": {
+      const baseURL =
+        process.env.OPENAI_BASE_URL ?? (provider === "local" ? "http://localhost:11434/v1" : "https://api.openai.com/v1");
+      const model = process.env.OPENAI_MODEL ?? (provider === "local" ? "muse-glimmer" : "gpt-4o-mini");
+      const apiKey = process.env.OPENAI_API_KEY ?? (provider === "local" ? "ollama" : needEnv("OPENAI_API_KEY"));
+      return { baseURL, model, apiKey, ...common };
+    }
+    case "mock":
+      throw new Error("mock uses MockObjectFinder, never finderOpts");
+  }
+}
+
+function createFinder(provider: ProviderName, deps?: AdapterDeps): ObjectFinder {
+  if (provider === "mock") return new MockObjectFinder();
+  return new OpenAICompatFinder(finderOpts(provider, deps));
+}
+
 export function createAdapters(
   provider: ProviderName = providerFromEnv(),
   deps?: AdapterDeps
@@ -104,7 +149,7 @@ export function createAdapters(
   const faces = createFaceMatcher(deps?.store ?? new PeopleStore(":memory:"), deps?.embedder);
   const agent = createAgentBrain(provider, deps);
   const mocks = {
-    finder: new MockObjectFinder(),
+    finder: createFinder(provider, deps),
     stt: new MockSpeechToText(),
     faces,
     agent,

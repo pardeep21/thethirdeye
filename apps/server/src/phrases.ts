@@ -4,7 +4,7 @@
 // answers come from the model, not from here.
 import type { Box, Denomination, SpeakLang } from "./protocol.js";
 import type { ProactiveEvent, RenderedPhrase, ScenePhraseItem } from "./decision.js";
-import { renderClock, toClock } from "./clock.js";
+import { distanceWord, renderClock, toClock, type PositionDistance } from "./clock.js";
 
 /** Re-exported so people-line callers keep one phrases import. */
 export { renderClock };
@@ -198,6 +198,50 @@ export function summarizePeople(items: PersonBits[], lang: SpeakLang = "pa", hfo
   });
   if (lang === "en") return `${items.length} people: ${parts.join(", ")}`;
   return `${countWord(items.length, lang)} log: ${parts.join(", ")}`;
+}
+
+/** Locate confidence below this hedges with "Shayad" instead of asserting. */
+export const FIND_MAYBE_CONFIDENCE = 0.6;
+
+export interface LocatedPhrase {
+  x: number;
+  distance: PositionDistance;
+  confidence: number;
+}
+
+/** Agent `find` answer from a Spark locate (or a miss). */
+export function renderFindLocated(
+  noun: string,
+  loc: LocatedPhrase | null,
+  hfovDeg: number,
+  lang: SpeakLang = "pa"
+): string {
+  if (!loc) {
+    if (lang === "en") return "Couldn't find it";
+    if (lang === "hi") return "Nahi mila";
+    return "Nahi labhi";
+  }
+  const clock = renderClock(toClock(loc.x, hfovDeg), lang);
+  if (loc.confidence < FIND_MAYBE_CONFIDENCE) {
+    if (lang === "en") return `Maybe ${noun}, ${clock}`;
+    return `Shayad ${noun}, ${clock}`;
+  }
+  const near =
+    loc.distance === "near"
+      ? lang === "en"
+        ? "close by"
+        : lang === "hi"
+          ? "paas"
+          : "nede"
+      : distanceWord(loc.distance, lang);
+  return `${noun}, ${clock}, ${near}`;
+}
+
+/** "hor?"/"aur?"/"more?" tail after a label-read chunk with more remaining. */
+export function renderReadMore(lang: SpeakLang = "pa"): string {
+  if (lang === "en") return "more?";
+  if (lang === "hi") return "aur?";
+  return "hor?";
 }
 
 /** Agent fallback when it cannot answer (bad model JSON, no usable view). */

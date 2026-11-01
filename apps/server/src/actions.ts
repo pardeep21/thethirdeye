@@ -1,12 +1,12 @@
-// Agent action dispatch (prompt 02, people flows in prompt 06): executes
-// the tools the JSON-action agent returns. remember/consent/forget run
-// the voice-enrollment state machine against the session's pending
-// action; find (prompt 07) is still a stub. People tools speak their
-// own deterministic line (consent is too important for model wording)
-// and return it so the caller skips the model's say for that turn.
+// Agent action dispatch (prompt 02, people flows in prompt 06, find in
+// prompt 07): executes the tools the JSON-action agent returns.
+// remember/consent/forget run the voice-enrollment state machine
+// against the session's pending action; find locates one noun on the
+// utterance's fresh frame. Executor-spoken tools return their line so
+// the caller skips the model's say for that turn (no double-speak).
 import type { DownMessage, SpeakLang } from "./protocol.js";
 import type { AgentAction } from "./adapters/agent.js";
-import type { FaceMatcher } from "./adapters/index.js";
+import type { FaceMatcher, ObjectFinder } from "./adapters/index.js";
 import type { DecisionEngine } from "./decision.js";
 import { PENDING_TTL_MS, type PendingAction, type Session } from "./session.js";
 import type { PeopleStore } from "./faces/store.js";
@@ -28,6 +28,7 @@ import {
   renderEnrollQuality,
   renderEnrollSaved,
   renderEnrollWhich,
+  renderFindLocated,
   renderForgetAsk,
   renderForgot,
   renderForgetUnknown,
@@ -48,6 +49,12 @@ export interface PeopleActions {
   now?: () => number;
 }
 
+export interface FindActions {
+  finder: ObjectFinder;
+  /** The utterance's fresh frame (absent when the capture missed). */
+  frame?: { jpeg: Buffer; hfovDeg: number };
+}
+
 export interface ActionContext {
   session: Session;
   engine: DecisionEngine;
@@ -60,6 +67,8 @@ export interface ActionContext {
   people?: PeopleActions;
   /** The user's words this turn (recorded as voice-consent evidence). */
   utterance?: string;
+  /** Find handles; absent in tests that predate prompt 07. */
+  find?: FindActions;
 }
 
 function norm(name: string): string {
@@ -249,6 +258,20 @@ function forgetPerson(ctx: ActionContext, p: PeopleActions, name: string, now: n
   return renderForgetAsk(pick.name, lang);
 }
 
+async function findObject(ctx: ActionContext, f: FindActions, noun: string): Promise<string> {
+  const lang: SpeakLang = ctx.session.lang;
+  const clean = noun.trim();
+  if (!f.frame) return renderAgentUnsure(lang);
+  let loc;
+  try {
+    loc = await f.finder.locate(f.frame.jpeg, clean);
+  } catch (err) {
+    console.error("find failed:", err instanceof Error ? err.message : err);
+    return renderAgentUnsure(lang);
+  }
+  return renderFindLocated(clean, loc, f.frame.hfovDeg, lang);
+}
+
 function pushState(ctx: ActionContext): void {
   ctx.send({
     type: "state",
@@ -288,9 +311,16 @@ export async function applyAgentActions(
       case "cash_check":
         ctx.engine.answer(await ctx.cashCheck(), ctx.session.lang);
         break;
-      case "find":
-        console.log(`find stub (prompt 07): ${a.noun}`);
+      case "find": {
+        const f = ctx.find;
+        if (!f) {
+          console.log(`find ignored: finder not wired (noun=${a.noun})`);
+          sayPeople(renderAgentUnsure(ctx.session.lang));
+          break;
+        }
+        sayPeople(await findObject(ctx, f, a.noun));
         break;
+      }
       case "remember_person":
       case "confirm_consent":
       case "forget_person": {

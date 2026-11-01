@@ -178,6 +178,18 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/**
+ * Bare "hor"/"more" with no scene question attached: continues a label
+ * read when one has unspoken words, else falls through to scene paging.
+ * "hor ki hai" is NOT bare (it asks what else is in view).
+ */
+export function isBareMore(text: string): boolean {
+  const norm = normalize(text);
+  const has = (w: string): boolean => norm.includes(` ${w} `);
+  const hasAny = (ws: string[]): boolean => ws.some(has);
+  return hasAny(MORE) && !hasAny(FIND_WHERE) && !hasAny(WHO) && !hasAny(DESCRIBE);
+}
+
 export function routeIntent(text: string): Intent {
   const norm = normalize(text);
   const words = norm.trim().split(" ").filter(Boolean);

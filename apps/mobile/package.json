@@ -34,7 +34,7 @@
   "name": "@thethirdeye/mobile",
   "private": true,
   "scripts": {
-    "test": "node --test src/gate.test.ts src/voice/locale.test.ts src/voice/pttMachine.test.ts src/theme.test.ts src/strings.test.ts src/format.test.ts",
+    "test": "node --test src/gate.test.ts src/voice/locale.test.ts src/voice/pttMachine.test.ts src/theme.test.ts src/strings.test.ts src/format.test.ts src/cameraLens.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "version": "0.1.0"

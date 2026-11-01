@@ -86,6 +86,13 @@ test("parseAgentOutput accepts a full valid answer", () => {
   assert.deepEqual(out.actions, [{ tool: "look_around", on: true }]);
 });
 
+test("parseAgentOutput carries readText, rejects a non-string", () => {
+  const out = parseAgentOutput('{"say": "Atta hor?", "readText": "Atta 5kg. Whole wheat."}');
+  assert.equal(out.readText, "Atta 5kg. Whole wheat.");
+  assert.equal(parseAgentOutput('{"say": "hi"}').readText, undefined);
+  assert.throws(() => parseAgentOutput('{"say": "hi", "readText": 42}'), /readText must be a string/);
+});
+
 test("parseAgentOutput is lenient on missing keys, clamps coordinates", () => {
   assert.deepEqual(parseAgentOutput("{}"), { say: null, positions: [], actions: [] });
   assert.deepEqual(parseAgentOutput('```json\n{"say": null}\n```'), { say: null, positions: [], actions: [] });
@@ -170,7 +177,7 @@ test("agent cost table prices Spark, null otherwise", () => {
 });
 
 test("system prompt carries the rules, schema and few-shots", () => {
-  assert.equal(AGENT_PROMPT_VERSION, 3);
+  assert.equal(AGENT_PROMPT_VERSION, 4);
   const prompt = buildAgentSystemPrompt({ lang: "pa", script: "gurmukhi" });
   assert.match(prompt, /blind shopkeeper/);
   assert.match(prompt, /15 words/);
@@ -188,6 +195,9 @@ test("system prompt carries the rules, schema and few-shots", () => {
   assert.match(prompt, /confirm_consent/);
   assert.match(prompt, /Never grant without his yes/);
   assert.match(prompt, /forget_person/);
+  assert.match(prompt, /Finding:.*say null/);
+  assert.match(prompt, /readText/);
+  assert.match(prompt, /key text first/);
   assert.match(buildAgentSystemPrompt({ lang: "en", script: "latin" }), /Latin\/Roman/);
   assert.match(buildAgentSystemPrompt({ lang: "hi", script: "devanagari" }), /Devanagari/);
 });

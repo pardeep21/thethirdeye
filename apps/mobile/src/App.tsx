@@ -23,6 +23,7 @@ import type {
 } from "../../server/src/protocol";
 import { createGate, shouldSendGate } from "./gate";
 import { resolveHfov, useGateFrameProcessor } from "./camera";
+import { LENS_SETTLE_MS, resolveCaptureLens } from "./cameraLens";
 import { EyeWs } from "./ws";
 import { SpeakQueue } from "./speech";
 import { captureSmall } from "./capture";
@@ -72,6 +73,11 @@ export default function App() {
   const [recogLocale, setRecogLocale] = useState<UtteranceLang>("pa-IN");
   const [serverState, setServerState] = useState<StateMessage | null>(null);
   const [lookAround, setLookAround] = useState(false);
+  // One-shot capture lens for capture_now (reads ask for main): the zoom
+  // prop follows this while set, then returns to the toggle. Ref mirror
+  // for the upload path; overlapping captures agree on the active lens.
+  const [lensOverride, setLensOverride] = useState<LensId | null>(null);
+  const lensOverrideRef = useRef<LensId | null>(null);
   const [showCamera, setShowCamera] = useState(false);
   const [ttsRate, setTtsRate] = useState(1);
   const [hfovOverride, setHfovOverride] = useState<number | null>(null);
@@ -105,6 +111,7 @@ export default function App() {
   const device = mainDevice;
   const lookRef = useRef(lookAround);
   lookRef.current = lookAround;
+  const captureForAgentRef = useRef<(reqId: string, lens?: LensId) => Promise<void>>(async () => {});
   const hfovRef = useRef(hfovOverride);
   hfovRef.current = hfovOverride;
   const recogRef = useRef(recogLocale);
@@ -174,7 +181,7 @@ export default function App() {
         },
         onEarcon: (msg) => playEarcon(msg.name),
         onCaptureNow: (msg) => {
-          void uploadFrameRef.current(msg.reqId);
+          void captureForAgentRef.current(msg.reqId, msg.lens);
         },
         // The server is the source of truth for look-around: the tile sends
         // mode up, and agent/bas-driven changes come back down through state.
@@ -251,7 +258,8 @@ export default function App() {
       try {
         const small = await captureSmall(takePhoto);
         if (small) {
-          const activeLens: LensId = lookRef.current ? "ultrawide" : "main";
+          const activeLens: LensId =
+            lensOverrideRef.current ?? (lookRef.current ? "ultrawide" : "main");
           ws.sendFrame(small.base64, {
             width: small.width,
             height: small.height,
@@ -268,6 +276,29 @@ export default function App() {
   );
   const uploadFrameRef = useRef(uploadFrame);
   uploadFrameRef.current = uploadFrame;
+
+  // Agent capture with a one-shot lens: switch zoom, settle, capture,
+  // restore. If the 800 ms server window is missed the server falls back
+  // to its last frame; overlapping captures share the active override.
+  const captureForAgent = useCallback(async (reqId: string, requested?: LensId) => {
+    const current: LensId =
+      lensOverrideRef.current ?? (lookRef.current ? "ultrawide" : "main");
+    const { lens, switched } = resolveCaptureLens(requested, current);
+    if (!switched) {
+      await uploadFrameRef.current(reqId);
+      return;
+    }
+    lensOverrideRef.current = lens;
+    setLensOverride(lens);
+    try {
+      await new Promise((r) => setTimeout(r, LENS_SETTLE_MS));
+      await uploadFrameRef.current(reqId);
+    } finally {
+      lensOverrideRef.current = null;
+      setLensOverride(null);
+    }
+  }, []);
+  captureForAgentRef.current = captureForAgent;
 
   const onGray = useCallback(
     (gray: Uint8Array) => {
@@ -325,7 +356,7 @@ export default function App() {
         pixelFormat="yuv"
         frameProcessor={frameProcessor}
         isActive={true}
-        zoom={lookAround ? device.minZoom : device.neutralZoom}
+        zoom={(lensOverride ?? lens) === "ultrawide" ? device.minZoom : device.neutralZoom}
         style={style}
       />
     );

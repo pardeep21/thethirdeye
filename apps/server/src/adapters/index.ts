@@ -21,8 +21,18 @@ export interface VisionAnswer {
   read(img: Buffer): Promise<string>;
 }
 
+/** One located object: normalised position + distance + confidence. */
+export interface LocatedObject {
+  x: number;
+  y: number;
+  distance: "near" | "mid" | "far";
+  confidence: number;
+}
+
 export interface ObjectFinder {
   find(img: Buffer, noun: string): Promise<Box[]>;
+  /** Locate one noun for the agent `find` action; null when not found. */
+  locate(img: Buffer, noun: string): Promise<LocatedObject | null>;
 } // F3 find
 
 export interface SpeechToText {

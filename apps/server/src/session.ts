@@ -25,6 +25,31 @@ export type PendingAction =
 /** How long disambiguation/consent/confirm questions stay answerable. */
 export const PENDING_TTL_MS = 30_000;
 
+/** Words per label-read chunk (the model speaks chunk 0, "hor" pages on). */
+export const READ_CHUNK_WORDS = 20;
+/** A label read older than this no longer answers "hor". */
+export const READ_FRESH_MS = 60_000;
+
+/** A label read with unspoken words: "hor" continues where it stopped. */
+export interface LastRead {
+  text: string;
+  /** Next chunk index (0 = from the start; the model already spoke 0). */
+  page: number;
+  ts: number;
+}
+
+/** Words [page*20, page*20+20) of a label text, or null when exhausted. */
+export function readChunk(
+  text: string,
+  page: number
+): { chunk: string; hasMore: boolean } | null {
+  const words = text.split(/\s+/).filter(Boolean);
+  const start = page * READ_CHUNK_WORDS;
+  if (start >= words.length) return null;
+  const slice = words.slice(start, start + READ_CHUNK_WORDS);
+  return { chunk: slice.join(" "), hasMore: start + READ_CHUNK_WORDS < words.length };
+}
+
 export interface ScenePerson {
   /** Stable-within-a-scene reference the agent uses ("P1", "P2", ...). */
   ref: string;
@@ -79,6 +104,7 @@ export class Session {
   lastFrame: SessionFrame | null = null;
   sceneState: SceneState = emptyScene();
   pendingAction: PendingAction | null = null;
+  lastRead: LastRead | null = null;
 
   constructor() {
     this.id = `s${nextSessionId++}`;

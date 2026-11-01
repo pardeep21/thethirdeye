@@ -7,13 +7,14 @@ import { join } from "node:path";
 import OpenAI from "openai";
 import type { ChatCompletion } from "openai/resources/chat/completions";
 import type {
+  Box,
   Denomination,
   SceneObject,
   SceneTriage,
   TriagePerson,
   TriageResult,
 } from "../protocol.js";
-import type { NamedTriage, VisionAnswer } from "./index.js";
+import type { LocatedObject, NamedTriage, ObjectFinder, VisionAnswer } from "./index.js";
 
 /** Triage token budget: 400 leaves room for reasoning + JSON (was 80). */
 export const DEFAULT_TRIAGE_MAX_TOKENS = 400;
@@ -443,6 +444,174 @@ function debugRequest(
     prompt,
     image: { bytes: imgBytes, dataUrlLength: dataUrl.length, dataUrlPrefix: dataUrl.slice(0, 80) },
   };
+}
+
+/** One locate round trip is a small JSON object; reasoning needs headroom. */
+export const FIND_MAX_TOKENS = 300;
+
+export function findMaxTokensFromEnv(): number {
+  const raw = process.env.FIND_MAX_TOKENS;
+  if (raw !== undefined) {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n > 0) return n;
+    throw new Error(`FIND_MAX_TOKENS=${raw} must be a positive integer`);
+  }
+  return FIND_MAX_TOKENS;
+}
+
+export function buildFindPrompt(noun: string): string {
+  return [
+    "You are a vision module for a blind shopkeeper's assistant.",
+    `Find the ${noun} in this image and return ONLY a JSON object with this exact shape, no other text:`,
+    '{"found":true|false,"x":0-1,"y":0-1,"distance":"near"|"mid"|"far","confidence":0-1}',
+    "x,y are normalised 0-1 from the image's top-left (the object's centre).",
+    "confidence is your certainty the object is really there: below 0.6 the answer hedges.",
+    'When it is not visible, return {"found":false} with no other fields. Never guess a position.',
+  ].join("\n");
+}
+
+/** Strict locate parse: malformed answers fail closed to null (not found). */
+export function parseLocateResult(text: string): LocatedObject | null {
+  let obj: unknown;
+  try {
+    obj = extractJsonObject(text);
+  } catch {
+    return null;
+  }
+  if (typeof obj !== "object" || obj === null) return null;
+  const root = obj as Record<string, unknown>;
+  if (root.found !== true) return null;
+  if (typeof root.x !== "number" || !Number.isFinite(root.x)) return null;
+  if (typeof root.y !== "number" || !Number.isFinite(root.y)) return null;
+  if (root.distance !== "near" && root.distance !== "mid" && root.distance !== "far") return null;
+  if (typeof root.confidence !== "number" || !Number.isFinite(root.confidence)) return null;
+  return {
+    x: Math.min(1, Math.max(0, root.x)),
+    y: Math.min(1, Math.max(0, root.y)),
+    distance: root.distance,
+    confidence: Math.min(1, Math.max(0, root.confidence)),
+  };
+}
+
+export class OpenAICompatFinder implements ObjectFinder {
+  private readonly client: OpenAI;
+  private readonly model: string;
+  private readonly maxTokens: number;
+  private readonly reasoningEffort: string | undefined;
+  private readonly debugDir: string | undefined;
+
+  constructor(opts: OpenAICompatOptions, client?: OpenAI) {
+    this.client = client ?? new OpenAI({ baseURL: opts.baseURL, apiKey: opts.apiKey });
+    this.model = opts.model;
+    this.maxTokens = opts.maxTokens ?? FIND_MAX_TOKENS;
+    this.reasoningEffort = opts.reasoningEffort;
+    this.debugDir = opts.debugDir;
+  }
+
+  /** Spark returns a point: the box is a small centred window on it. */
+  async find(img: Buffer, noun: string): Promise<Box[]> {
+    const loc = await this.locate(img, noun);
+    if (!loc) return [];
+    const w = 0.1;
+    const h = 0.1;
+    return [
+      {
+        x: Math.min(1 - w, Math.max(0, loc.x - w / 2)),
+        y: Math.min(1 - h, Math.max(0, loc.y - h / 2)),
+        w,
+        h,
+      },
+    ];
+  }
+
+  async locate(img: Buffer, noun: string, debugLabel?: string): Promise<LocatedObject | null> {
+    const prompt = buildFindPrompt(noun);
+    const dataUrl = toDataUrl(img);
+    const attempts: DebugAttempt[] = [];
+    const baseRequest = {
+      model: this.model,
+      max_tokens: this.maxTokens,
+      ...(this.reasoningEffort ? { reasoning_effort: this.reasoningEffort } : {}),
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: dataUrl } },
+          ],
+        },
+      ],
+    } as Record<string, unknown>;
+
+    const runOnce = async (withJsonMode: boolean): Promise<string> => {
+      const params = withJsonMode
+        ? { ...baseRequest, response_format: { type: "json_object" } }
+        : baseRequest;
+      const start = Date.now();
+      try {
+        const res = (await this.client.chat.completions.create(
+          params as unknown as Parameters<OpenAI["chat"]["completions"]["create"]>[0]
+        )) as ChatCompletion;
+        const content = res.choices[0]?.message?.content ?? "";
+        attempts.push({
+          request: debugRequest(params, img.length, dataUrl, prompt),
+          latencyMs: Date.now() - start,
+          response: {
+            content,
+            reasoningContent: null,
+            finishReason: res.choices[0]?.finish_reason ?? null,
+            usage: (res.usage as unknown) ?? null,
+          },
+          error: null,
+        });
+        return content;
+      } catch (err) {
+        attempts.push({
+          request: debugRequest(params, img.length, dataUrl, prompt),
+          latencyMs: Date.now() - start,
+          response: null,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+    };
+
+    try {
+      let text: string;
+      try {
+        text = await runOnce(true);
+      } catch (err) {
+        if (isJsonModeError(err)) text = await runOnce(false);
+        else throw err;
+      }
+      const result = parseLocateResult(text);
+      this.writeDebug(debugLabel, attempts, result !== null || text.includes('"found":false'));
+      return result;
+    } catch (err) {
+      this.writeDebug(debugLabel, attempts, false);
+      throw err;
+    }
+  }
+
+  private writeDebug(
+    debugLabel: string | undefined,
+    attempts: DebugAttempt[],
+    parsed: boolean
+  ): void {
+    if (!this.debugDir || !debugLabel) return;
+    const last = [...attempts].reverse().find((a) => a.response);
+    const file: DebugFile = {
+      label: debugLabel,
+      model: this.model,
+      at: new Date().toISOString(),
+      attempts,
+      parsed,
+      parseError: parsed ? null : "locate output unusable",
+      usage: last?.response?.usage ?? null,
+    };
+    mkdirSync(this.debugDir, { recursive: true });
+    writeFileSync(join(this.debugDir, `${sanitizeLabel(debugLabel)}.json`), JSON.stringify(file, null, 2));
+  }
 }
 
 export class OpenAICompatAnswer implements VisionAnswer {

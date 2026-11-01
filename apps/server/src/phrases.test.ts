@@ -15,12 +15,14 @@ import {
   renderEnrollSaved,
   renderEnrollWhich,
   renderFind,
+  renderFindLocated,
   renderForgot,
   renderForgetAsk,
   renderForgetUnknown,
   renderForgetWhich,
   renderOkay,
   renderProactive,
+  renderReadMore,
   renderRenamed,
   summarizePeople,
 } from "./phrases.js";
@@ -308,6 +310,34 @@ test("enrollment and forget phrases", () => {
   assert.equal(renderForgetUnknown("Ravi"), "Ravi taan yaad hi nahi si");
   assert.equal(renderForgetWhich(), "Naam poora dasso");
   assert.equal(renderRenamed("Ravi"), "Naa Ravi kar ditta");
+});
+
+test("find locate rendering: clock + nearness, maybe, miss", () => {
+  assert.equal(
+    renderFindLocated("Kainchi", { x: 0.9, distance: "near", confidence: 0.9 }, 100),
+    "Kainchi, 1 o'clock, nede"
+  );
+  assert.equal(
+    renderFindLocated("Kainchi", { x: 0.1, distance: "far", confidence: 0.8 }, 100, "en"),
+    "Kainchi, 11 o'clock, far"
+  );
+  assert.equal(
+    renderFindLocated("Kainchi", { x: 0.9, distance: "near", confidence: 0.5 }, 100),
+    "Shayad Kainchi, 1 o'clock"
+  );
+  assert.equal(
+    renderFindLocated("Kainchi", { x: 0.9, distance: "near", confidence: 0.2 }, 100, "en"),
+    "Maybe Kainchi, 1 o'clock"
+  );
+  assert.equal(renderFindLocated("Kainchi", null, 100), "Nahi labhi");
+  assert.equal(renderFindLocated("Kainchi", null, 100, "hi"), "Nahi mila");
+  assert.equal(renderFindLocated("Kainchi", null, 100, "en"), "Couldn't find it");
+});
+
+test("read-more tail", () => {
+  assert.equal(renderReadMore("pa"), "hor?");
+  assert.equal(renderReadMore("hi"), "aur?");
+  assert.equal(renderReadMore("en"), "more?");
 });
 
 test("kaun hai answers use clocks when available", () => {

@@ -8,7 +8,7 @@ import { applyAgentActions, type ActionContext } from "./actions.js";
 import { DecisionEngine } from "./decision.js";
 import type { DownMessage } from "./protocol.js";
 import { PENDING_TTL_MS, Session } from "./session.js";
-import { MockFaceMatcher } from "./adapters/mocks.js";
+import { MockFaceMatcher, MockObjectFinder } from "./adapters/mocks.js";
 import type { DetectedFace, FaceQuality } from "./faces/embed.js";
 import { PeopleStore } from "./faces/store.js";
 import { FaceTracker, TRACK_TTL_MS } from "./faces/tracker.js";
@@ -143,22 +143,45 @@ test("cash_check speaks the fresh read as P1", async () => {
   assert.equal(speaks[0]?.priority, "P1");
 });
 
-test("find still logs its prompt 07 stub", async () => {
+test("find locates the noun on the fresh frame and speaks the clock", async () => {
   const ctx = makeCtx();
-  const lines: string[] = [];
-  const origLog = console.log;
-  console.log = (...args: unknown[]) => {
-    lines.push(args.map(String).join(" "));
+  ctx.find = {
+    finder: new MockObjectFinder([{ x: 0.9, y: 0.6, distance: "near", confidence: 0.9 }]),
+    frame: { jpeg: Buffer.alloc(0), hfovDeg: 100 },
   };
-  try {
-    const said = await applyAgentActions([{ tool: "find", noun: "Kainchi" }], ctx);
-    assert.equal(said, null);
-  } finally {
-    console.log = origLog;
-  }
-  assert.equal(ctx.sent.length, 0);
-  assert.equal(ctx.engine.takeSpeak().length, 0);
-  assert.ok(lines.some((l) => l.includes("find stub (prompt 07)")));
+  const said = await applyAgentActions([{ tool: "find", noun: "Kainchi" }], ctx);
+  assert.equal(said, "Kainchi, 1 o'clock, nede");
+  assert.equal(ctx.engine.takeSpeak()[0]?.text, "Kainchi, 1 o'clock, nede");
+});
+
+test("find miss says Nahi labhi, low confidence hedges", async () => {
+  const miss = makeCtx();
+  miss.find = { finder: new MockObjectFinder([null]), frame: { jpeg: Buffer.alloc(0), hfovDeg: 100 } };
+  assert.equal(await applyAgentActions([{ tool: "find", noun: "Kainchi" }], miss), "Nahi labhi");
+
+  const unsure = makeCtx();
+  unsure.find = {
+    finder: new MockObjectFinder([{ x: 0.9, y: 0.6, distance: "near", confidence: 0.5 }]),
+    frame: { jpeg: Buffer.alloc(0), hfovDeg: 100 },
+  };
+  assert.equal(
+    await applyAgentActions([{ tool: "find", noun: "Kainchi" }], unsure),
+    "Shayad Kainchi, 1 o'clock"
+  );
+});
+
+test("find without a frame or wiring says unsure", async () => {
+  const noFrame = makeCtx();
+  noFrame.find = { finder: new MockObjectFinder() };
+  assert.equal(
+    await applyAgentActions([{ tool: "find", noun: "Kainchi" }], noFrame),
+    "pakka nahi, dobara bolo"
+  );
+  const unwired = makeCtx();
+  assert.equal(
+    await applyAgentActions([{ tool: "find", noun: "Kainchi" }], unwired),
+    "pakka nahi, dobara bolo"
+  );
 });
 
 test("non-people tools return null (the model say still speaks)", async () => {
