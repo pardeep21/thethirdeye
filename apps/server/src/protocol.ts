@@ -100,6 +100,12 @@ export interface ListeningMessage {
   state: "start" | "stop";
 }
 
+/** Phone -> server: look-around mode switch (prompt 03 owns the server side). */
+export interface ModeMessage {
+  type: "mode";
+  lookAround: boolean;
+}
+
 /** Server -> phone: play a bundled earcon. */
 export interface EarconMessage {
   type: "earcon";
@@ -129,7 +135,8 @@ export type UpMessage =
   | SettingsMessage
   | HelloMessage
   | UtteranceMessage
-  | ListeningMessage;
+  | ListeningMessage
+  | ModeMessage;
 export type DownMessage = SpeakMessage | EarconMessage | CaptureNowMessage | StateMessage;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -212,6 +219,11 @@ export function isUtteranceMessage(v: unknown): v is UtteranceMessage {
 export function isListeningMessage(v: unknown): v is ListeningMessage {
   if (!isRecord(v) || v.type !== "listening") return false;
   return v.state === "start" || v.state === "stop";
+}
+
+export function isModeMessage(v: unknown): v is ModeMessage {
+  if (!isRecord(v) || v.type !== "mode") return false;
+  return typeof v.lookAround === "boolean";
 }
 
 export function isEarconMessage(v: unknown): v is EarconMessage {

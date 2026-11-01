@@ -48,6 +48,13 @@ test("heartbeat sends after 5 s even with no change", () => {
   assert.deepEqual(due, { send: true, reason: "heartbeat" });
 });
 
+test("heartbeat interval is configurable (look-around uses 2 s)", () => {
+  const g = createGate();
+  shouldSendGate(g, flat(100), 1000, 2000);
+  assert.deepEqual(shouldSendGate(g, flat(100), 2999, 2000), { send: false, reason: "no-change" });
+  assert.deepEqual(shouldSendGate(g, flat(100), 3000, 2000), { send: true, reason: "heartbeat" });
+});
+
 test("wrong-sized frame throws", () => {
   assert.throws(() => shouldSendGate(createGate(), new Uint8Array(10), 1000), /1024-byte/);
   assert.throws(() => meanAbsDiff(flat(0), new Uint8Array(10)), /1024-byte/);

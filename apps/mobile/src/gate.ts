@@ -37,7 +37,8 @@ export type GateReason = "first" | "changed" | "heartbeat" | "no-change";
 export function shouldSendGate(
   state: GateState,
   gray: Uint8Array,
-  nowMs: number
+  nowMs: number,
+  heartbeatMs: number = GATE_HEARTBEAT_MS
 ): { send: boolean; reason: GateReason } {
   checkFrame(gray);
   if (state.lastSent === null) {
@@ -50,7 +51,7 @@ export function shouldSendGate(
     state.lastSentAt = nowMs;
     return { send: true, reason: "changed" };
   }
-  if (nowMs - state.lastSentAt >= GATE_HEARTBEAT_MS) {
+  if (nowMs - state.lastSentAt >= heartbeatMs) {
     state.lastSent = Uint8Array.from(gray);
     state.lastSentAt = nowMs;
     return { send: true, reason: "heartbeat" };

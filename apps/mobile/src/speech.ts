@@ -19,6 +19,31 @@ export class SpeakQueue {
   private queue: SpeakMessage[] = [];
   private speaking = false;
   private current: { msg: SpeakMessage; startedAt: number } | null = null;
+  private rate = 1;
+  private speakingListeners = new Set<(speaking: boolean) => void>();
+
+  /** TTS rate multiplier (Settings); clamped to 0.5..1.5. */
+  setRate(rate: number): void {
+    this.rate = Math.min(1.5, Math.max(0.5, rate));
+  }
+
+  /** True while an utterance is playing or queued. Drives the Talk tile. */
+  isSpeakingNow(): boolean {
+    return this.speaking || this.queue.length > 0;
+  }
+
+  /** Subscribe to speaking-state changes (for the speaking tile visual). */
+  onSpeakingChange(cb: (speaking: boolean) => void): () => void {
+    this.speakingListeners.add(cb);
+    return () => {
+      this.speakingListeners.delete(cb);
+    };
+  }
+
+  private notifySpeaking(): void {
+    const active = this.isSpeakingNow();
+    for (const cb of this.speakingListeners) cb(active);
+  }
 
   enqueue(msg: SpeakMessage): void {
     if (msg.priority === "P1") {
@@ -29,6 +54,7 @@ export class SpeakQueue {
     } else {
       this.queue.push(msg);
     }
+    this.notifySpeaking();
     void this.pump();
   }
 
@@ -38,6 +64,7 @@ export class SpeakQueue {
    */
   bargeIn(nowMs: number = Date.now()): void {
     this.queue = [];
+    this.notifySpeaking();
     const cur = this.current;
     if (cur && cur.msg.kind === "cash" && nowMs - cur.startedAt <= CASH_GRACE_MS) return;
     void Speech.stop();
@@ -48,11 +75,13 @@ export class SpeakQueue {
     const next = this.queue.shift();
     if (!next) return;
     this.speaking = true;
+    this.notifySpeaking();
     this.current = { msg: next, startedAt: Date.now() };
     try {
       await new Promise<void>((resolve) => {
         Speech.speak(next.text, {
           language: LANG_VOICE[next.lang],
+          rate: this.rate,
           onDone: () => resolve(),
           onStopped: () => resolve(),
           onError: () => resolve(),
@@ -61,12 +90,14 @@ export class SpeakQueue {
     } finally {
       this.current = null;
       this.speaking = false;
+      this.notifySpeaking();
       void this.pump();
     }
   }
 
   async shutdown(): Promise<void> {
     this.queue = [];
+    this.notifySpeaking();
     await Speech.stop();
   }
 }

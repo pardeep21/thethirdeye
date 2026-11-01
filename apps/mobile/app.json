@@ -5,11 +5,20 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "newArchEnabled": true,
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "backgroundColor": "#0B0C0E"
+    },
     "ios": {
       "bundleIdentifier": "com.thethirdeye.app"
     },
     "android": {
-      "package": "com.thethirdeye.app"
+      "package": "com.thethirdeye.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B0C0E"
+      }
     },
     "plugins": [
       [
@@ -33,9 +42,12 @@
         "expo-speech-recognition",
         {
           "microphonePermission": "TheThirdEye needs microphone access to hear your voice commands.",
-          "androidSpeechServicePackages": ["com.google.android.googlequicksearchbox"]
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox"
+          ]
         }
-      ]
+      ],
+      "expo-font"
     ]
   }
 }

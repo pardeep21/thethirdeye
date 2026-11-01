@@ -6,6 +6,7 @@
     "expo-constants": "^58.0.14",
     "expo-dev-client": "~58.0.17",
     "expo-file-system": "^58.0.13",
+    "expo-font": "~58.0.11",
     "expo-haptics": "^58.0.7",
     "expo-image-manipulator": "^58.0.16",
     "expo-keep-awake": "^58.0.3",
@@ -13,6 +14,7 @@
     "expo-speech-recognition": "^58.0.1",
     "react": "^19.3.1",
     "react-native": "^0.88.1",
+    "react-native-svg": "15.16.0",
     "react-native-vision-camera": "^4.7.3",
     "react-native-volume-manager": "^2.2.0",
     "react-native-worklets-core": "^1.6.3",
@@ -32,7 +34,7 @@
   "name": "@thethirdeye/mobile",
   "private": true,
   "scripts": {
-    "test": "node --test src/gate.test.ts src/voice/locale.test.ts src/voice/pttMachine.test.ts",
+    "test": "node --test src/gate.test.ts src/voice/locale.test.ts src/voice/pttMachine.test.ts src/theme.test.ts src/strings.test.ts src/format.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "version": "0.1.0"

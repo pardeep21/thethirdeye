@@ -10,6 +10,7 @@ import {
   type LensId,
   type SpeakLang,
   type SpeakMessage,
+  type SpokenScript,
   type StateMessage,
   type UtteranceLang,
 } from "../../server/src/protocol";
@@ -43,6 +44,8 @@ export interface WsEvents {
   onCaptureNow(msg: CaptureNowMessage): void;
   onState(msg: StateMessage): void;
   onStatus(connected: boolean): void;
+  /** Fired synchronously when an utterance goes up (latency tracking). */
+  onUtteranceSent?: (ts: number) => void;
 }
 
 export interface WsIdent {
@@ -140,13 +143,19 @@ export class EyeWs {
   }
 
   sendUtterance(text: string, lang: UtteranceLang, confidence?: number): void {
+    const ts = Date.now();
+    this.events.onUtteranceSent?.(ts);
     this.sendJson({
       type: "utterance",
       text,
       lang,
       ...(confidence !== undefined ? { confidence } : {}),
-      ts: Date.now(),
+      ts,
     });
+  }
+
+  sendMode(lookAround: boolean): void {
+    this.sendJson({ type: "mode", lookAround });
   }
 
   sendListening(state: "start" | "stop"): void {
@@ -157,8 +166,8 @@ export class EyeWs {
     this.sendJson({ type: "command", name });
   }
 
-  sendSettings(lang: SpeakLang): void {
-    this.sendJson({ type: "settings", lang });
+  sendSettings(lang: SpeakLang, script?: SpokenScript): void {
+    this.sendJson({ type: "settings", lang, ...(script !== undefined ? { script } : {}) });
   }
 
   close(): void {

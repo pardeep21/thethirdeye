@@ -8,6 +8,7 @@ import {
   isFrameMessage,
   isHelloMessage,
   isListeningMessage,
+  isModeMessage,
   isSettingsMessage,
   isSpeakMessage,
   isStateMessage,
@@ -104,6 +105,12 @@ test("hello/utterance/listening guards", () => {
   assert.equal(isListeningMessage({ type: "listening", state: "start" }), true);
   assert.equal(isListeningMessage({ type: "listening", state: "stop" }), true);
   assert.equal(isListeningMessage({ type: "listening", state: "maybe" }), false);
+});
+
+test("mode guard", () => {
+  assert.equal(isModeMessage({ type: "mode", lookAround: true }), true);
+  assert.equal(isModeMessage({ type: "mode", lookAround: "yes" }), false);
+  assert.equal(isModeMessage({ type: "mode" }), false);
 });
 
 test("earcon/capture_now/state guards", () => {
