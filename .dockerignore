@@ -1,0 +1,16 @@
+# Keep the server image context small and secret-free. The Dockerfile only
+# COPYs package.json, package-lock.json and apps/server/{package.json,
+# tsconfig.json,src}; everything else is build tooling, other apps, or secrets.
+.git
+node_modules
+**/node_modules
+**/dist
+apps/mobile
+apps/faces
+apps/eval/src
+apps/eval/debug
+apps/server/.env
+apps/server/thethirdeye.db*
+apps/server/scripts
+docs
+*.log
