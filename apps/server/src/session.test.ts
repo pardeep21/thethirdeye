@@ -131,6 +131,7 @@ test("stats snapshot percentiles over samples", () => {
     frameWaitMs: { p50: 0, p95: 0 },
     modelMs: { p50: 0, p95: 0 },
     totalMs: { p50: 0, p95: 0 },
+    timeouts: { triage: 0, scene: 0, agent: 0, answer: 0, find: 0 },
   });
   for (let i = 1; i <= 10; i++) {
     st.record({ frameWaitMs: i * 10, modelMs: i * 100, totalMs: i * 1000 });
@@ -149,4 +150,13 @@ test("stats keep only the last 50 samples", () => {
   }
   assert.equal(st.count, 50);
   assert.equal(st.snapshot().totalMs.p50, 35);
+});
+
+test("stats count timeouts per stage", () => {
+  const st = new UtteranceStats();
+  st.recordTimeout("triage");
+  st.recordTimeout("triage");
+  st.recordTimeout("agent");
+  st.recordTimeout("find");
+  assert.deepEqual(st.snapshot().timeouts, { triage: 2, scene: 0, agent: 1, answer: 0, find: 1 });
 });

@@ -250,6 +250,13 @@ export function renderAgentUnsure(lang: SpeakLang = "pa"): string {
   return "pakka nahi, dobara bolo";
 }
 
+/** Deterministic P1 line when a command-turn model call times out. */
+export function renderModelTimeout(lang: SpeakLang = "pa"): string {
+  if (lang === "en") return "Not sure, ask again";
+  if (lang === "hi") return "Pakka nahi, dobara poochho";
+  return "Pakka nahi, dobara puchho";
+}
+
 /** Voice enrollment: the consent question. Spoken after remember_person. */
 export function renderEnrollAsk(name: string, lang: SpeakLang = "pa"): string {
   if (lang === "en") return `${name}, save? Say yes or no`;

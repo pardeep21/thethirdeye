@@ -8,6 +8,12 @@ import type { DownMessage, SpeakLang } from "./protocol.js";
 import type { AgentAction } from "./adapters/agent.js";
 import type { FaceMatcher, ObjectFinder } from "./adapters/index.js";
 import type { DecisionEngine } from "./decision.js";
+import {
+  findTimeoutFromEnv,
+  withTimeout,
+  ModelTimeoutError,
+  type TimeoutStage,
+} from "./timeouts.js";
 import { PENDING_TTL_MS, type PendingAction, type Session } from "./session.js";
 import type { PeopleStore } from "./faces/store.js";
 import {
@@ -30,6 +36,7 @@ import {
   renderEnrollWhich,
   renderFindLocated,
   renderForgetAsk,
+  renderModelTimeout,
   renderForgot,
   renderForgetUnknown,
   renderForgetWhich,
@@ -69,6 +76,8 @@ export interface ActionContext {
   utterance?: string;
   /** Find handles; absent in tests that predate prompt 07. */
   find?: FindActions;
+  /** Timeout sink for model calls (stats + log); the line is still spoken. */
+  onTimeout?: (stage: TimeoutStage, timeoutMs: number) => void;
 }
 
 function norm(name: string): string {
@@ -264,8 +273,12 @@ async function findObject(ctx: ActionContext, f: FindActions, noun: string): Pro
   if (!f.frame) return renderAgentUnsure(lang);
   let loc;
   try {
-    loc = await f.finder.locate(f.frame.jpeg, clean);
+    loc = await withTimeout(f.finder.locate(f.frame.jpeg, clean), findTimeoutFromEnv(), "find");
   } catch (err) {
+    if (err instanceof ModelTimeoutError) {
+      ctx.onTimeout?.("find", err.timeoutMs);
+      return renderModelTimeout(lang);
+    }
     console.error("find failed:", err instanceof Error ? err.message : err);
     return renderAgentUnsure(lang);
   }

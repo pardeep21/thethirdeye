@@ -8,10 +8,10 @@ import { WebSocket } from "ws";
 import sharp from "sharp";
 import { startServer } from "./index.js";
 import { MockAgentBrain } from "./adapters/agent.js";
-import type { AgentBrain } from "./adapters/agent.js";
+import type { AgentBrain, AgentInput, AgentOutput, MockAgentScript } from "./adapters/agent.js";
 import { MockObjectFinder, MockVisionTriage } from "./adapters/mocks.js";
-import type { NamedTriage, ObjectFinder } from "./adapters/index.js";
-import type { SceneTriage } from "./protocol.js";
+import type { NamedTriage, ObjectFinder, VisionAnswer } from "./adapters/index.js";
+import type { Box, SceneTriage, TriageResult } from "./protocol.js";
 import { PeopleStore } from "./faces/store.js";
 import type { DetectedFace, FaceEmbedder } from "./faces/embed.js";
 
@@ -34,7 +34,8 @@ async function startTestServer(
   embedder?: FaceEmbedder,
   agent?: AgentBrain,
   triage?: NamedTriage,
-  finder?: ObjectFinder
+  finder?: ObjectFinder,
+  answer?: VisionAnswer
 ): Promise<{
   port: number;
   done: () => Promise<void>;
@@ -43,7 +44,7 @@ async function startTestServer(
   // Stub faces for determinism: a running sidecar must not change test behaviour.
   process.env.FACES = "stub";
   const store = new PeopleStore(":memory:");
-  const server = await startServer(0, { store, embedder, agent, triage, finder });
+  const server = await startServer(0, { store, embedder, agent, triage, finder, answer });
   return {
     port: server.port,
     done: async () => {
@@ -1051,6 +1052,281 @@ test("agent look_around action starts narration on the next frame", async () => 
     }
   } finally {
     delete process.env.CAPTURE_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+// ---- Model timeout guards (overnight T1): fake slow adapters ----
+
+const testDelay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+async function statsTimeouts(port: number): Promise<Record<string, number>> {
+  const res = await fetch(`http://127.0.0.1:${port}/stats`);
+  assert.equal(res.status, 200);
+  return ((await res.json()) as { timeouts: Record<string, number> }).timeouts;
+}
+
+class SlowTriage extends MockVisionTriage {
+  constructor(private readonly delayMs: number) {
+    super();
+  }
+  override async triage(img: Buffer): Promise<TriageResult> {
+    await testDelay(this.delayMs);
+    return super.triage(img);
+  }
+  override async triageScene(img: Buffer): Promise<SceneTriage> {
+    await testDelay(this.delayMs);
+    return super.triageScene(img);
+  }
+}
+
+class SlowAgent extends MockAgentBrain {
+  constructor(
+    private readonly delayMs: number,
+    script?: MockAgentScript
+  ) {
+    super(script);
+  }
+  override async respond(input: AgentInput): Promise<AgentOutput> {
+    await testDelay(this.delayMs);
+    return super.respond(input);
+  }
+}
+
+class SlowFinder extends MockObjectFinder {
+  constructor(private readonly delayMs: number) {
+    super([{ x: 0.5, y: 0.5, distance: "mid", confidence: 0.9 }]);
+  }
+  override async find(img: Buffer, noun: string): Promise<Box[]> {
+    await testDelay(this.delayMs);
+    return super.find(img, noun);
+  }
+  override async locate(img: Buffer, noun: string) {
+    await testDelay(this.delayMs);
+    return super.locate(img, noun);
+  }
+}
+
+class SlowAnswer implements VisionAnswer {
+  constructor(private readonly delayMs: number) {}
+  async describe(): Promise<string> {
+    await testDelay(this.delayMs);
+    return "late description";
+  }
+  async read(): Promise<string> {
+    await testDelay(this.delayMs);
+    return "late label text here";
+  }
+}
+
+test("timeout: slow proactive cash triage drops silently + counts stats", async () => {
+  process.env.TRIAGE_TIMEOUT_MS = "30";
+  const t = await startTestServer(undefined, undefined, new SlowTriage(300));
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendFrame(ws);
+      // Window covers the late resolve at 300ms: nothing may speak, ever.
+      const got = await collectFor(ws, 500);
+      assert.ok(
+        got.every((m) => m.type !== "speak"),
+        `proactive timeout must stay silent, got: ${JSON.stringify(got)}`
+      );
+      assert.equal((await statsTimeouts(t.port)).triage, 1);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.TRIAGE_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+test("timeout: slow proactive scene triage drops silently + counts stats", async () => {
+  process.env.TRIAGE_TIMEOUT_MS = "30";
+  const t = await startTestServer(undefined, undefined, new SlowTriage(300));
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendMode(ws, true);
+      await testDelay(20);
+      sendSceneFrame(ws);
+      const got = await collectFor(ws, 500);
+      assert.ok(
+        got.every((m) => m.type !== "speak"),
+        `scene timeout must stay silent, got: ${JSON.stringify(got)}`
+      );
+      assert.equal((await statsTimeouts(t.port)).scene, 1);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.TRIAGE_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+test("timeout: slow agent speaks the pa line, clears busy, discards the late result", async () => {
+  process.env.AGENT_TIMEOUT_MS = "30";
+  const agent = new SlowAgent(300);
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "ki hai saamne");
+      const early = await collectUntil(ws, (m) => m.type === "capture_now", 2000);
+      const capture = early.find((m) => m.type === "capture_now") as { reqId: string };
+      sendFrame(ws, { reqId: capture.reqId });
+      const turn = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 2000);
+      // The capture frame may speak fast cash (kind cash); the answer is the line.
+      const answers = turn.filter((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(answers.length, 1);
+      assert.equal(answers[0]?.text, "Pakka nahi, dobara puchho");
+      assert.equal(answers[0]?.priority, "P1");
+      // Past the agent's 300ms resolve: the slow call did run (input
+      // recorded) but its late result was discarded: no second answer.
+      const rest = await collectFor(ws, 500);
+      const lateAnswers = rest.filter((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(lateAnswers.length, 0);
+      assert.equal(agent.inputs.length, 1);
+      assert.equal((await statsTimeouts(t.port)).agent, 1);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.AGENT_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+test("timeout: agent fallback line in hi and en", async () => {
+  process.env.AGENT_TIMEOUT_MS = "30";
+  const agent = new SlowAgent(300);
+  const t = await startTestServer(undefined, agent);
+  try {
+    for (const [lang, line] of [
+      ["hi", "Pakka nahi, dobara poochho"],
+      ["en", "Not sure, ask again"],
+    ] as const) {
+      const ws = await openClient(t.port);
+      try {
+        ws.send(JSON.stringify({ type: "settings", lang }));
+        await testDelay(20);
+        sendUtterance(ws, "ki hai saamne");
+        const early = await collectUntil(ws, (m) => m.type === "capture_now", 2000);
+        const capture = early.find((m) => m.type === "capture_now") as { reqId: string };
+        sendFrame(ws, { reqId: capture.reqId });
+        const turn = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 2000);
+        const answers = turn.filter((m) => m.type === "speak" && m.kind === "answer");
+        assert.equal(answers.length, 1, `expected one answer for lang=${lang}`);
+        assert.equal(answers[0]?.text, line);
+      } finally {
+        ws.close();
+      }
+    }
+    assert.equal((await statsTimeouts(t.port)).agent, 2);
+  } finally {
+    delete process.env.AGENT_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+test("timeout: slow howmuch speaks the line, never a stale value", async () => {
+  process.env.TRIAGE_TIMEOUT_MS = "30";
+  const t = await startTestServer(undefined, undefined, new SlowTriage(300));
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendFrame(ws); // seeds frames.get(); its proactive call times out silently
+      await testDelay(100);
+      sendUtterance(ws, "eh kinne da");
+      const got = await collectUntil(ws, (m) => m.type === "speak", 2000);
+      const speak = got.find((m) => m.type === "speak") as { text: string; priority: string };
+      assert.equal(speak.text, "Pakka nahi, dobara puchho");
+      assert.equal(speak.priority, "P1");
+      assert.equal((await statsTimeouts(t.port)).triage, 2);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.TRIAGE_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+test("timeout: slow command find speaks the line", async () => {
+  process.env.FIND_TIMEOUT_MS = "30";
+  process.env.MOCK_STT_TEXT = "find my red packet";
+  const t = await startTestServer(undefined, undefined, undefined, new SlowFinder(300));
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendFrame(ws); // seeds frames.get() with the fast default triage
+      await testDelay(100);
+      sendAudio(ws);
+      const got = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "answer", 2000);
+      assert.equal(got.find((m) => m.kind === "answer")?.text, "Pakka nahi, dobara puchho");
+      assert.equal((await statsTimeouts(t.port)).find, 1);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.FIND_TIMEOUT_MS;
+    delete process.env.MOCK_STT_TEXT;
+    await t.done();
+  }
+});
+
+test("timeout: slow command read speaks the line", async () => {
+  process.env.AGENT_TIMEOUT_MS = "30";
+  process.env.MOCK_STT_TEXT = "read this";
+  const t = await startTestServer(undefined, undefined, undefined, undefined, new SlowAnswer(300));
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendFrame(ws);
+      await testDelay(100);
+      sendAudio(ws);
+      const got = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "answer", 2000);
+      assert.equal(got.find((m) => m.kind === "answer")?.text, "Pakka nahi, dobara puchho");
+      assert.equal((await statsTimeouts(t.port)).answer, 1);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.AGENT_TIMEOUT_MS;
+    delete process.env.MOCK_STT_TEXT;
+    await t.done();
+  }
+});
+
+test("timeout: slow agent find action speaks the line once, skips say", async () => {
+  process.env.FIND_TIMEOUT_MS = "30";
+  const agent = new MockAgentBrain([
+    {
+      say: "stale say that must not speak",
+      positions: [],
+      actions: [{ tool: "find", noun: "phone" }],
+    },
+  ]);
+  const t = await startTestServer(undefined, agent, undefined, new SlowFinder(300));
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "find my phone");
+      const early = await collectUntil(ws, (m) => m.type === "capture_now", 2000);
+      const capture = early.find((m) => m.type === "capture_now") as { reqId: string };
+      sendFrame(ws, { reqId: capture.reqId });
+      const turn = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 2000);
+      const answers = turn.filter((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(answers.length, 1);
+      assert.equal(answers[0]?.text, "Pakka nahi, dobara puchho");
+      assert.equal((await statsTimeouts(t.port)).find, 1);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.FIND_TIMEOUT_MS;
     await t.done();
   }
 });

@@ -1,5 +1,10 @@
 // Per-utterance latency instrumentation (prompt 02): one sample per
 // agent turn, p50/p95 per stage over the last 50 (GET /stats).
+// Overnight T1 adds a timeout count per model-call stage.
+import type { TimeoutStage } from "./timeouts.js";
+
+export type TimeoutCounts = Record<TimeoutStage, number>;
+
 export interface UtteranceTiming {
   /** utterance_rx -> frame_rx: capture_now round trip (or timeout). */
   frameWaitMs: number;
@@ -19,6 +24,7 @@ export interface StatsSnapshot {
   frameWaitMs: StageStats;
   modelMs: StageStats;
   totalMs: StageStats;
+  timeouts: TimeoutCounts;
 }
 
 export const STATS_MAX_SAMPLES = 50;
@@ -36,10 +42,15 @@ function stage(values: number[]): StageStats {
 
 export class UtteranceStats {
   private samples: UtteranceTiming[] = [];
+  private timeouts: TimeoutCounts = { triage: 0, scene: 0, agent: 0, answer: 0, find: 0 };
 
   record(t: UtteranceTiming): void {
     this.samples.push(t);
     if (this.samples.length > STATS_MAX_SAMPLES) this.samples.shift();
+  }
+
+  recordTimeout(stage: TimeoutStage): void {
+    this.timeouts[stage]++;
   }
 
   get count(): number {
@@ -52,6 +63,7 @@ export class UtteranceStats {
       frameWaitMs: stage(this.samples.map((s) => s.frameWaitMs)),
       modelMs: stage(this.samples.map((s) => s.modelMs)),
       totalMs: stage(this.samples.map((s) => s.totalMs)),
+      timeouts: { ...this.timeouts },
     };
   }
 }

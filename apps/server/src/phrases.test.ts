@@ -20,6 +20,7 @@ import {
   renderForgetAsk,
   renderForgetUnknown,
   renderForgetWhich,
+  renderModelTimeout,
   renderOkay,
   renderProactive,
   renderReadMore,
@@ -42,6 +43,13 @@ test("agent unsure fallback", () => {
   assert.equal(renderAgentUnsure("pa"), "pakka nahi, dobara bolo");
   assert.equal(renderAgentUnsure("hi"), "pakka nahi, dobara bolo");
   assert.equal(renderAgentUnsure("en"), "not sure, say it again");
+});
+
+test("model timeout line is deterministic in all 3 langs", () => {
+  assert.equal(renderModelTimeout("pa"), "Pakka nahi, dobara puchho");
+  assert.equal(renderModelTimeout("hi"), "Pakka nahi, dobara poochho");
+  assert.equal(renderModelTimeout("en"), "Not sure, ask again");
+  assert.equal(renderModelTimeout(), "Pakka nahi, dobara puchho");
 });
 
 test("pa cash lines match MVP.md verbatim", () => {

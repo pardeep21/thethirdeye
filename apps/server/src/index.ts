@@ -28,6 +28,7 @@ import { SceneNarrator } from "./narration.js";
 import {
   renderAgentUnsure,
   renderFind,
+  renderModelTimeout,
   renderOkay,
   renderProactive,
   renderReadMore,
@@ -44,12 +45,20 @@ import {
   type SessionFrame,
 } from "./session.js";
 import { UtteranceStats } from "./stats.js";
+import {
+  agentTimeoutFromEnv,
+  findTimeoutFromEnv,
+  triageTimeoutFromEnv,
+  withTimeout,
+  ModelTimeoutError,
+  type TimeoutStage,
+} from "./timeouts.js";
 import { isBareMore, routeIntent } from "./intent.js";
 import { PeopleStore } from "./faces/store.js";
 import type { FaceEmbedder } from "./faces/embed.js";
 import { checkEnrollFace } from "./faces/quality.js";
 import { FaceTracker } from "./faces/tracker.js";
-import type { MatchedFace, ObjectFinder } from "./adapters/index.js";
+import type { MatchedFace, ObjectFinder, VisionAnswer } from "./adapters/index.js";
 import { defaultDbPath, facesEveryNFromEnv, selectEmbedder, shouldRunFaces } from "./faces/index.js";
 
 export interface ServerHandles {
@@ -66,6 +75,8 @@ export interface ServerOpts {
   triage?: NamedTriage;
   /** Override the object finder (tests inject a scripted mock). */
   finder?: ObjectFinder;
+  /** Override vision answers (tests inject a scripted mock). */
+  answer?: VisionAnswer;
 }
 
 /** How long an utterance waits for its capture_now frame (prompt 02: 800 ms). */
@@ -146,6 +157,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
   const agent = opts?.agent ?? adapters.agent;
   const triage = opts?.triage ?? adapters.triage;
   const finder = opts?.finder ?? adapters.finder;
+  const answer = opts?.answer ?? adapters.answer;
   const frames = new LatestFrameStore();
   const stats = new UtteranceStats();
   const captureTimeoutMs = captureTimeoutFromEnv();
@@ -277,6 +289,34 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       for (const s of drain()) send(s);
     };
 
+    /** One /stats count + one log line per model timeout. */
+    function noteTimeout(stage: TimeoutStage, timeoutMs: number): void {
+      stats.recordTimeout(stage);
+      console.log(`model timeout stage=${stage} timeoutMs=${timeoutMs}`);
+    }
+
+    /**
+     * Runs a command-turn model call. On timeout speaks the deterministic
+     * P1 line, clears agentBusy, pushes state, and returns null; other
+     * errors propagate exactly as before.
+     */
+    async function tryCommandModel<T>(
+      stage: TimeoutStage,
+      ms: number,
+      call: () => Promise<T>
+    ): Promise<T | null> {
+      try {
+        return await withTimeout(call(), ms, stage);
+      } catch (err) {
+        if (!(err instanceof ModelTimeoutError)) throw err;
+        noteTimeout(stage, err.timeoutMs);
+        engine.answer(renderModelTimeout(session.lang), session.lang);
+        session.agentBusy = false;
+        pushState();
+        return null;
+      }
+    }
+
     function whoParts(): PersonBits[] {
       return session.sceneState.people.map((p) => ({
         name: p.knownName,
@@ -334,7 +374,19 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     async function cashRead(): Promise<string> {
       const frame = frames.get();
       if (!frame) return renderProactive({ kind: "NOTE_UNSURE" }, session.lang).text;
-      const fresh = await triage.triage(await cashInput(frame.jpeg, frame.lens));
+      let fresh;
+      try {
+        fresh = await withTimeout(
+          triage.triage(await cashInput(frame.jpeg, frame.lens)),
+          triageTimeoutFromEnv(),
+          "triage"
+        );
+      } catch (err) {
+        if (!(err instanceof ModelTimeoutError)) throw err;
+        // Command context: deterministic line, never a stale value.
+        noteTimeout("triage", err.timeoutMs);
+        return renderModelTimeout(session.lang);
+      }
       const top = fresh.notes[0];
       if (top && top.denomination !== null && top.confidence >= 0.5) {
         return renderProactive(
@@ -383,9 +435,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       text: string,
       err: unknown
     ): Promise<void> {
-      console.error("agent failed:", err instanceof Error ? err.message : err);
+      const timedOut = err instanceof ModelTimeoutError;
+      if (timedOut) noteTimeout(err.stage, err.timeoutMs);
+      else console.error("agent failed:", err instanceof Error ? err.message : err);
       send({ type: "earcon", name: "error" });
-      const fallback = renderAgentUnsure(session.lang);
+      const fallback = timedOut ? renderModelTimeout(session.lang) : renderAgentUnsure(session.lang);
       engine.answer(fallback, session.lang);
       sendDrained();
       session.pushTurn({ role: "user", text });
@@ -478,14 +532,20 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       const tModelStart = Date.now();
       let output: AgentOutput;
       try {
-        output = await agent.respond({
-          history: [...session.history],
-          utterance: text,
-          image,
-          scene: session.sceneState,
-          lang: session.lang,
-          script: session.script,
-        });
+        // A late respond resolves into the void: the race already settled,
+        // so it is discarded and can never double-speak.
+        output = await withTimeout(
+          agent.respond({
+            history: [...session.history],
+            utterance: text,
+            image,
+            scene: session.sceneState,
+            lang: session.lang,
+            script: session.script,
+          }),
+          agentTimeoutFromEnv(),
+          "agent"
+        );
       } catch (err) {
         await failAgentTurn(tRx, tFrame, tModelStart, text, err);
         return;
@@ -501,6 +561,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         people: { store: people, tracker, faces: adapters.faces },
         utterance: text,
         find: { finder, frame: image },
+        onTimeout: (stage, ms) => noteTimeout(stage, ms),
       });
       // A label read: the model spoke chunk 0, "hor" pages from chunk 1.
       if (output.readText !== undefined && output.readText.trim()) {
@@ -558,7 +619,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             return;
           }
           engine.cancel();
-          engine.answer(await adapters.answer.describe(frame.jpeg, transcript), session.lang);
+          const said = await tryCommandModel("answer", agentTimeoutFromEnv(), () =>
+            answer.describe(frame.jpeg, transcript)
+          );
+          if (said === null) return;
+          engine.answer(said, session.lang);
           return;
         }
         case "read": {
@@ -567,7 +632,9 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             return;
           }
           engine.cancel();
-          const full = (await adapters.answer.read(frame.jpeg)).trim();
+          const raw = await tryCommandModel("answer", agentTimeoutFromEnv(), () => answer.read(frame.jpeg));
+          if (raw === null) return;
+          const full = raw.trim();
           const first = readChunk(full, 0);
           if (!first) {
             engine.answer(renderAgentUnsure(session.lang), session.lang);
@@ -582,8 +649,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         }
         case "find": {
           engine.cancel();
-          const box = frame ? ((await finder.find(frame.jpeg, intent.noun))[0] ?? null) : null;
-          engine.answer(renderFind(intent.noun, box, session.lang), session.lang);
+          const boxes = frame
+            ? await tryCommandModel("find", findTimeoutFromEnv(), () => finder.find(frame.jpeg, intent.noun))
+            : [];
+          if (boxes === null) return;
+          engine.answer(renderFind(intent.noun, boxes[0] ?? null, session.lang), session.lang);
           return;
         }
         case "who": {
@@ -637,10 +707,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           // coordinates + objects); otherwise the fast cash-only prompt.
           // Faces run every Nth frame (FACES_EVERY_N; slow machines skip).
           const runFaces = shouldRunFaces(frameNo++, facesEveryN);
+          const triageCall = session.lookAround
+            ? withTimeout(triage.triageScene(jpeg), triageTimeoutFromEnv(), "scene")
+            : withTimeout(triage.triage(await cashInput(jpeg, msg.lens)), triageTimeoutFromEnv(), "triage");
           const [result, matched] = await Promise.all([
-            session.lookAround
-              ? triage.triageScene(jpeg)
-              : triage.triage(await cashInput(jpeg, msg.lens)),
+            triageCall,
             runFaces ? adapters.faces.matchDetailed(jpeg) : Promise.resolve([] as MatchedFace[]),
           ]);
           const nowMs = Date.now();
@@ -650,6 +721,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           engine.onFrame(result, fresh, nowMs);
           for (const ev of narrator.onScene(result, hfovDeg)) engine.announceScene(ev);
         } catch (err) {
+          if (err instanceof ModelTimeoutError) {
+            // Proactive timeout: drop silently, never speak stale or fake.
+            noteTimeout(err.stage, err.timeoutMs);
+            return [];
+          }
           console.error("perception failed:", err instanceof Error ? err.message : err);
           return [];
         }
