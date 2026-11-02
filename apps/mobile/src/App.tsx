@@ -4,7 +4,7 @@
 // screens for the helper. Look-around switches to the ultra-wide lens with
 // a 2 s heartbeat; the server side of the mode switch lands in prompt 03.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppState, StyleSheet, Text, View, StatusBar as SystemStatusBar, type StyleProp, type ViewStyle } from "react-native";
+import { AppState, Platform, StyleSheet, Text, View, StatusBar as SystemStatusBar, type StyleProp, type ViewStyle } from "react-native";
 import {
   Camera,
   useCameraDevice,
@@ -519,7 +519,13 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg },
+  root: {
+    flex: 1,
+    backgroundColor: colors.bg,
+    // Edge-to-edge (Android 15+): start below the status bar so the header
+    // never slides under the clock/antennas. Covers every screen at once.
+    paddingTop: Platform.OS === "android" ? (SystemStatusBar.currentHeight ?? 0) : 0,
+  },
   splash: { flex: 1, backgroundColor: colors.bg, alignItems: "center", justifyContent: "center" },
   splashText: { fontSize: 30, color: colors.text },
   hiddenCamera: { position: "absolute", width: 1, height: 1, opacity: 0 },
