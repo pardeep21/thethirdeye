@@ -1,0 +1,74 @@
+# TheThirdEye full stack: server + faces sidecar behind Caddy (auto-HTTPS).
+# Faces stays on the internal network (no published port); the phone talks
+# to the server through https://DOMAIN (HTTP + WebSocket).
+#
+#   cp compose.env.example .env   # fill in DOMAIN, PROVIDER, META_API_KEY, APP_TOKEN
+#   docker compose up -d --build
+#
+# Small VPS (< 4 GB RAM): use docker-compose.stub.yml instead (FACES=stub,
+# no recognition).
+name: thethirdeye
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    image: thethirdeye-server
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      PROVIDER: ${PROVIDER:-mock}
+      META_API_KEY: ${META_API_KEY:-}
+      META_BASE_URL: ${META_BASE_URL:-https://api.meta.ai/v1}
+      META_MODEL: ${META_MODEL:-muse-spark-1.3}
+      APP_TOKEN: ${APP_TOKEN:?Set APP_TOKEN in .env}
+      FACES: sidecar
+      FACES_HOST: faces
+      THETHIRDEYE_DB: /data/thethirdeye.db
+    volumes:
+      - eyedb:/data
+    depends_on:
+      faces:
+        condition: service_healthy
+    networks:
+      - eye
+
+  faces:
+    build:
+      context: ./apps/faces
+      dockerfile: Dockerfile
+    image: thethirdeye-faces
+    restart: unless-stopped
+    # No ports: internal network only.
+    expose:
+      - "8765"
+    environment:
+      FACE_DETECTOR: ${FACE_DETECTOR:-yunet}
+    networks:
+      - eye
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    depends_on:
+      - server
+    networks:
+      - eye
+
+volumes:
+  eyedb:
+  caddydata:
+  caddyconfig:
+
+networks:
+  eye:

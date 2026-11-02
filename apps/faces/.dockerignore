@@ -1,0 +1,9 @@
+# Faces build context: ship only what the image needs (no venv, no dev tools).
+.venv
+__pycache__
+*.pyc
+benchmark.py
+calibrate.py
+run.ps1
+run.sh
+README.md

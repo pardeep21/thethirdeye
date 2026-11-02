@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { HttpFaceEmbedder } from "./http.js";
+import { HttpFaceEmbedder, sidecarBaseUrl } from "./http.js";
 import { StubFaceEmbedder } from "./embed.js";
 import {
   facesEveryNFromEnv,
@@ -214,4 +214,16 @@ test("facesEveryNFromEnv defaults to 1 and rejects junk", () => {
 test("shouldRunFaces gates frames 0, N, 2N", () => {
   assert.deepEqual([0, 1, 2, 3, 4].map((f) => shouldRunFaces(f, 1)), [true, true, true, true, true]);
   assert.deepEqual([0, 1, 2, 3, 4].map((f) => shouldRunFaces(f, 2)), [true, false, true, false, true]);
+});
+
+test("sidecarBaseUrl honours FACES_HOST and FACES_PORT", () => {
+  withEnv({ FACES_HOST: undefined, FACES_PORT: undefined }, () =>
+    assert.equal(sidecarBaseUrl(), "http://127.0.0.1:8765")
+  );
+  withEnv({ FACES_HOST: "faces", FACES_PORT: undefined }, () =>
+    assert.equal(sidecarBaseUrl(), "http://faces:8765")
+  );
+  withEnv({ FACES_HOST: undefined, FACES_PORT: "9999" }, () =>
+    assert.equal(sidecarBaseUrl(), "http://127.0.0.1:9999")
+  );
 });

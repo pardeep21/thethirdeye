@@ -1,0 +1,5 @@
+# Caddy front door: auto-HTTPS for $DOMAIN, everything ( REST + WebSocket )
+# reverse-proxied to the server. Caddy handles WS upgrades transparently.
+{$DOMAIN} {
+  reverse_proxy server:8080
+}

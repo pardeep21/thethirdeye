@@ -8,8 +8,9 @@ import type { DetectedFace, FaceEmbedder } from "./embed.js";
 export const SIDECAR_TIMEOUT_MS = 1500;
 
 export function sidecarBaseUrl(): string {
+  const host = process.env.FACES_HOST ?? "127.0.0.1";
   const port = process.env.FACES_PORT ?? "8765";
-  return `http://127.0.0.1:${port}`;
+  return `http://${host}:${port}`;
 }
 
 export interface HttpFaceEmbedderOpts {
