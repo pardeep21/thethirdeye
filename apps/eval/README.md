@@ -21,8 +21,8 @@ No key needed for `--provider mock`. Real providers need keys (see
 data/
   notes/<label>_*.jpg   label starts with the denomination: 10_1.jpg,
                         500_new_front_03.jpg (10/20/50/100/200/500)
-  scenes/*.jpg          shop-counter photos (direct Meta client)
-  audio/*.{wav,mp3,...} voice clips (direct Meta client, WAV preferred)
+  scenes/*.jpg + shop/*.jpg       shop-counter photos (direct Meta client)
+  audio/* + voice/*.{wav,mp3,...} voice clips (direct Meta client, WAV preferred)
 ```
 
 ## Usage (run from `apps/eval`)

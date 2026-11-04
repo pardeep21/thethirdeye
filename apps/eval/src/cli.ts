@@ -89,7 +89,7 @@ function usage(): string {
     "Options:",
     "  --provider NAME  notes triage provider: mock|meta|openrouter|openai|local",
     "                   (default: PROVIDER env, else mock)",
-    "  --data DIR       input root (default ./data; expects notes/, scenes/, audio/)",
+    "  --data DIR       input root (default ./data; expects notes/, scenes/ (+shop/), audio/ (+voice/))",
     "  --out FILE       report path (default ./results.md)",
     "  --sizes LIST     notes resize sizes, longest side px (default 512,1024)",
     "  --limit N        max files per test, 0 = all (default 0; use for cheap smoke runs)",
@@ -102,9 +102,9 @@ function usage(): string {
   ].join("\n");
 }
 
-function listFiles(dir: string, exts: string[]): string[] {
+function listFiles(dir: string, exts: string[], quiet = false): string[] {
   if (!existsSync(dir)) {
-    console.log(`(skip) missing folder: ${dir}`);
+    if (!quiet) console.log(`(skip) missing folder: ${dir}`);
     return [];
   }
   return readdirSync(dir)
@@ -132,20 +132,28 @@ async function main(): Promise<void> {
   const want = (t: TestName) => args.test === "all" || args.test === t;
   const applyLimit = (files: string[]) => (args.limit > 0 ? files.slice(0, args.limit) : files);
 
+  const imageExts = [".jpg", ".jpeg", ".png", ".webp"];
+  const audioExts = [".wav", ".mp3", ".m4a", ".ogg", ".flac"];
   const noteFiles = want("notes")
-    ? applyLimit(listFiles(join(data, "notes"), [".jpg", ".jpeg", ".png", ".webp"]))
+    ? applyLimit(listFiles(join(data, "notes"), imageExts))
     : [];
   const sceneFiles = want("scenes")
-    ? applyLimit(listFiles(join(data, "scenes"), [".jpg", ".jpeg", ".png", ".webp"]))
+    ? applyLimit([
+        ...listFiles(join(data, "scenes"), imageExts),
+        ...listFiles(join(data, "shop"), imageExts, true),
+      ])
     : [];
   const audioFiles = want("audio")
-    ? applyLimit(listFiles(join(data, "audio"), [".wav", ".mp3", ".m4a", ".ogg", ".flac"]))
+    ? applyLimit([
+        ...listFiles(join(data, "audio"), audioExts),
+        ...listFiles(join(data, "voice"), audioExts, true),
+      ])
     : [];
 
   if (!noteFiles.length && !sceneFiles.length && !audioFiles.length) {
     throw new Error(
       `No input files for test "${args.test}" under ${data}/ ` +
-        `(needs notes/<label>_*.jpg, scenes/*, audio/*).`
+        `(needs notes/<label>_*.jpg, scenes/* (+shop/*), audio/* (+voice/*)).`
     );
   }
 
