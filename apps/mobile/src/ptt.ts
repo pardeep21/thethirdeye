@@ -12,7 +12,7 @@ import type { UtteranceLang } from "../../server/src/protocol";
 import type { EyeWs } from "./ws";
 import type { SpeakQueue } from "./speech";
 import { playEarcon } from "./voice/earcons";
-import { setPartial } from "./voice/captions";
+import { addCaption, setPartial } from "./voice/captions";
 import type { DeviceRecognizer } from "./voice/recognizer";
 import {
   createPttState,
@@ -65,6 +65,9 @@ export function usePushToTalk(opts: PushToTalkOpts): { pttState: PttState; talk:
         case "sendUtterance":
           ws?.sendUtterance(fx.text, optsRef.current.recogLang, fx.confidence);
           setPartial(fx.text);
+          // Heard-transcript caption: shows what the recognizer actually
+          // sent, so mistranscriptions are visible instead of mysterious.
+          addCaption(`You: ${fx.text}`, "heard");
           dispatch({ type: "sent" });
           return;
         case "thinkingEarcon":

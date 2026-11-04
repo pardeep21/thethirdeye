@@ -37,6 +37,19 @@ function satisfies(want: RecogLocale, haveRaw: string): boolean {
  * matches, so the recognizer still attempts the user's language (the OS
  * falls back to its default service rather than failing hard).
  */
+/**
+ * Effective recognition locale: an explicit Settings override wins (even
+ * over device support, so hi-IN/en-IN can be A/B-compared on a phone with
+ * no pa-IN); otherwise the language fallback chain decides.
+ */
+export function resolveRecognitionLocale(
+  lang: AnswerLang,
+  supported: string[],
+  override: RecogLocale | null
+): RecogLocale {
+  return override ?? pickRecognitionLocale(lang, supported);
+}
+
 export function pickRecognitionLocale(lang: AnswerLang, supported: string[]): RecogLocale {
   const candidates = candidatesFor(lang);
   for (const c of candidates) {

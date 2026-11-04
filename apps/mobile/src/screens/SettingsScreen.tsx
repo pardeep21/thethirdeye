@@ -42,7 +42,7 @@ function OptionRow<T extends string | number>({
       accessibilityLabel={label}
       accessibilityHint={hint}
       accessibilityState={{ selected }}
-      style={[styles.option, selected ? styles.optionSelected : null]}
+      style={({ pressed }) => [styles.option, selected ? styles.optionSelected : null, pressed ? styles.pressed : null]}
     >
       <Text style={[styles.optionText, selected ? styles.optionTextSelected : null]}>{label}</Text>
     </Pressable>
@@ -66,6 +66,9 @@ export function SettingsScreen(): React.JSX.Element {
   const s = STRINGS[app.lang];
   const [url, setUrl] = useState(app.serverUrl);
   const [token, setToken] = useState(app.appToken);
+  // True after a save press until the fields are edited again; drives the
+  // confirmation line, which then tracks the live connection state.
+  const [saved, setSaved] = useState(false);
 
   const langs: Array<{ id: SpeakLang; label: string }> = [
     { id: "pa", label: s.langPa },
@@ -84,7 +87,7 @@ export function SettingsScreen(): React.JSX.Element {
           onPress={() => app.setScreen("home")}
           accessibilityRole="button"
           accessibilityLabel={s.backHome}
-          style={styles.backButton}
+          style={({ pressed }) => [styles.backButton, pressed ? styles.pressed : null]}
         >
           <Icon name="back" size={26} color={colors.text} strokeWidth={2.2} />
         </Pressable>
@@ -95,7 +98,10 @@ export function SettingsScreen(): React.JSX.Element {
           <TextInput
             style={styles.input}
             value={url}
-            onChangeText={setUrl}
+            onChangeText={(t) => {
+              setUrl(t);
+              setSaved(false);
+            }}
             autoCapitalize="none"
             autoCorrect={false}
             accessibilityLabel={s.serverUrl}
@@ -103,7 +109,10 @@ export function SettingsScreen(): React.JSX.Element {
           <TextInput
             style={styles.input}
             value={token}
-            onChangeText={setToken}
+            onChangeText={(t) => {
+              setToken(t);
+              setSaved(false);
+            }}
             autoCapitalize="none"
             autoCorrect={false}
             secureTextEntry
@@ -114,15 +123,28 @@ export function SettingsScreen(): React.JSX.Element {
           />
           <Pressable
             onPress={() => {
+              if (!url.trim()) return;
+              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
               app.saveUrl(url.trim());
               app.saveToken(token);
+              setSaved(true);
             }}
             accessibilityRole="button"
             accessibilityLabel={s.saveReconnect}
-            style={styles.saveButton}
+            style={({ pressed }) => [styles.saveButton, pressed ? styles.pressed : null]}
           >
             <Text style={styles.saveText}>{s.saveReconnect}</Text>
           </Pressable>
+          {saved ? (
+            <Text
+              style={[
+                styles.saveStatus,
+                app.authFailed ? styles.saveStatusError : app.connected ? styles.saveStatusOk : null,
+              ]}
+            >
+              {app.authFailed ? s.saveAuthFailed : app.connected ? s.saveConnected : s.saveConnecting}
+            </Text>
+          ) : null}
         </Section>
         <Section title={s.answerLang}>
           <View style={styles.row}>
@@ -164,13 +186,35 @@ export function SettingsScreen(): React.JSX.Element {
             {s.recogLocaleIs}: {app.recogLocale}
           </Text>
         </Section>
+        <Section title={s.recognitionTitle}>
+          <View style={styles.row}>
+            <View style={styles.cell}>
+              <OptionRow
+                label={s.hfovAuto}
+                selected={app.recogOverride === null}
+                hint={s.recognitionTitle}
+                onPress={() => app.changeRecogOverride(null)}
+              />
+            </View>
+            {(["hi-IN", "en-IN"] as const).map((loc) => (
+              <View key={loc} style={styles.cell}>
+                <OptionRow
+                  label={loc}
+                  selected={app.recogOverride === loc}
+                  hint={s.recognitionTitle}
+                  onPress={() => app.changeRecogOverride(loc)}
+                />
+              </View>
+            ))}
+          </View>
+        </Section>
         <Section title={s.showCamera}>
           <Pressable
             onPress={() => app.changeShowCamera(!app.showCamera)}
             accessibilityRole="switch"
             accessibilityLabel={s.showCamera}
             accessibilityState={{ checked: app.showCamera }}
-            style={styles.switchRow}
+            style={({ pressed }) => [styles.switchRow, pressed ? styles.pressed : null]}
           >
             <Text style={styles.optionText}>{app.showCamera ? "ON" : "OFF"}</Text>
             <Toggle on={app.showCamera} />
@@ -210,7 +254,7 @@ export function SettingsScreen(): React.JSX.Element {
             accessibilityRole="switch"
             accessibilityLabel={app.muted ? s.unmuteAction : s.muteAction}
             accessibilityState={{ checked: app.muted }}
-            style={styles.switchRow}
+            style={({ pressed }) => [styles.switchRow, pressed ? styles.pressed : null]}
           >
             <Text style={styles.optionText}>{app.muted ? "ON" : "OFF"}</Text>
             <Toggle on={app.muted} />
@@ -222,7 +266,7 @@ export function SettingsScreen(): React.JSX.Element {
             accessibilityRole="button"
             accessibilityLabel={s.about}
             accessibilityHint={s.aboutHint}
-            style={styles.saveButton}
+            style={({ pressed }) => [styles.saveButton, pressed ? styles.pressed : null]}
           >
             <Text style={styles.saveText}>{s.aboutHint}</Text>
           </Pressable>
@@ -283,6 +327,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   saveText: { fontSize: 18, fontFamily: fonts.bold, color: colors.onAccent },
+  pressed: { opacity: 0.55 },
+  saveStatus: { fontSize: 14, fontFamily: fonts.semiBold, color: colors.muted },
+  saveStatusOk: { color: colors.success },
+  saveStatusError: { color: colors.danger },
   row: { flexDirection: "row", gap: space.sm },
   cell: { flex: 1, minWidth: 0 },
   option: {

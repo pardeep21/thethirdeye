@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { candidatesFor, pickRecognitionLocale } from "./locale.ts";
+import { candidatesFor, pickRecognitionLocale, resolveRecognitionLocale } from "./locale.ts";
 
 const ALL = ["pa-IN", "hi-IN", "en-IN", "en-US"];
 
@@ -34,6 +34,13 @@ test("bare language tag satisfies its locale", () => {
 
 test("other region variants do not satisfy the locale", () => {
   assert.equal(pickRecognitionLocale("en", ["en-US"]), "en-IN");
+});
+
+test("explicit override wins over support and fallback chain", () => {
+  assert.equal(resolveRecognitionLocale("pa", ["hi-IN", "en-IN"], "en-IN"), "en-IN");
+  assert.equal(resolveRecognitionLocale("pa", ["hi-IN", "en-IN"], "hi-IN"), "hi-IN");
+  assert.equal(resolveRecognitionLocale("pa", ["hi-IN", "en-IN"], null), "hi-IN");
+  assert.equal(resolveRecognitionLocale("en", [], "hi-IN"), "hi-IN");
 });
 
 test("empty supported list returns the primary so the recognizer attempts it", () => {

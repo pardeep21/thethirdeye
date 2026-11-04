@@ -5,6 +5,7 @@ import { createContext, useContext } from "react";
 import type { SpeakLang, SpokenScript, StateMessage, UtteranceLang } from "../../server/src/protocol";
 import type { Caption } from "./voice/captions";
 import type { PttState, VoiceMode } from "./ptt";
+import type { RecogLocale } from "./voice/locale";
 
 export type Screen = "home" | "people" | "peopleEnroll" | "settings" | "about";
 
@@ -43,6 +44,9 @@ export interface AppState {
   voiceMode: VoiceMode;
   changeVoiceMode(mode: VoiceMode): void;
   recogLocale: UtteranceLang;
+  /** Explicit recognizer override (null = Auto fallback chain). */
+  recogOverride: RecogLocale | null;
+  changeRecogOverride(override: RecogLocale | null): void;
   showCamera: boolean;
   changeShowCamera(show: boolean): void;
   ttsRate: number;

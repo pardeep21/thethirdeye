@@ -52,6 +52,7 @@ export interface Strings {
   onDeviceStt: string;
   serverAudio: string;
   recogLocaleIs: string;
+  recognitionTitle: string;
   muteAction: string;
   unmuteAction: string;
   showCamera: string;
@@ -63,6 +64,9 @@ export interface Strings {
   langEn: string;
   authFailed: string;
   appToken: string;
+  saveConnecting: string;
+  saveConnected: string;
+  saveAuthFailed: string;
   about: string;
   aboutHint: string;
   disclaimerTitle: string;
@@ -132,7 +136,11 @@ const PA: Strings = {
   appToken: "App token",
   about: "About",
   aboutHint: "Honesty statement",
+  saveConnecting: "Saved ✓ — connecting…",
+  saveConnected: "Saved ✓ — connected",
+  saveAuthFailed: "Saved — token rejected, check the token",
   disclaimerTitle: "Please read",
+  recognitionTitle: "Recognition",
   iUnderstand: "Main samajh gaya · I understand",
   disclaimerSpoken:
     "TheThirdEye ik aid hai, medical device nahi. Eh galat ho sakda hai. Zaroori rakam duje bande to confirm karao.",
@@ -198,8 +206,12 @@ const HI: Strings = {
   langEn: "English",
   authFailed: "Server token rejected — check Settings",
   appToken: "App token",
+  saveConnecting: "Saved ✓ — connecting…",
+  saveConnected: "Saved ✓ — connected",
+  saveAuthFailed: "Saved — token rejected, check the token",
   about: "About",
   aboutHint: "Honesty statement",
+  recognitionTitle: "Recognition",
   disclaimerTitle: "Kripya padho",
   iUnderstand: "Main samajh gaya · I understand",
   disclaimerSpoken:
@@ -266,9 +278,13 @@ const EN: Strings = {
   langEn: "English",
   authFailed: "Server token rejected — check Settings",
   appToken: "App token",
+  saveConnecting: "Saved ✓ — connecting…",
+  saveConnected: "Saved ✓ — connected",
+  saveAuthFailed: "Saved — token rejected, check the token",
   about: "About",
   aboutHint: "Honesty statement",
   disclaimerTitle: "Please read",
+  recognitionTitle: "Recognition",
   iUnderstand: "I understand",
   disclaimerSpoken:
     "TheThirdEye is an aid, not a medical device. It can be wrong. Confirm important amounts with another person.",

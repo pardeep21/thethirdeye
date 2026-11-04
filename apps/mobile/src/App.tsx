@@ -38,7 +38,7 @@ import { AppStateContext, type Screen } from "./store";
 import { DEFAULT_APP_TOKEN, DEFAULT_SERVER_URL } from "./config";
 import { acceptDisclaimer, isDisclaimerAccepted } from "./disclaimer";
 import { ExpoRecognizer } from "./voice/recognizer";
-import { pickRecognitionLocale } from "./voice/locale";
+import { resolveRecognitionLocale, type RecogLocale } from "./voice/locale";
 import { playEarcon } from "./voice/earcons";
 import { addCaption, useCaptions, usePartial } from "./voice/captions";
 import { GREETING, NO_NETWORK, STRINGS } from "./strings";
@@ -61,6 +61,7 @@ export default function App() {
   const saidNoNetworkRef = useRef(false);
   const greetedRef = useRef(false);
   const utteranceTsRef = useRef<number | null>(null);
+  const peopleRevRef = useRef<number | null>(null);
   const wsRef = useRef<EyeWs | null>(null);
   const langRef = useRef<SpeakLang>("pa");
   const scriptRef = useRef<SpokenScript>("gurmukhi");
@@ -79,6 +80,7 @@ export default function App() {
   const [muted, setMuted] = useState(false);
   const [voiceMode, setVoiceMode] = useState<VoiceMode>("android_stt");
   const [recogLocale, setRecogLocale] = useState<UtteranceLang>("pa-IN");
+  const [recogOverride, setRecogOverride] = useState<RecogLocale | null>(null);
   const [serverState, setServerState] = useState<StateMessage | null>(null);
   const [lookAround, setLookAround] = useState(false);
   // One-shot capture lens for capture_now (reads ask for main): the zoom
@@ -151,19 +153,23 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Recognition locale: Settings language mapped to BCP-47, falling back
-  // through pa/hi/en when the device lacks support. Logged on startup.
+  // Recognition locale: explicit override wins, else the Settings
+  // language mapped to BCP-47, falling back through pa/hi/en when the
+  // device lacks support. Logged whenever it resolves.
   useEffect(() => {
     let cancelled = false;
     void recognizer.supportedLocales().then((supported) => {
       if (cancelled) return;
-      console.log(`speech recognition locales: ${supported.join(", ") || "(none reported)"}`);
-      setRecogLocale(pickRecognitionLocale(lang, supported));
+      const resolved = resolveRecognitionLocale(lang, supported, recogOverride);
+      console.log(
+        `speech recognition locales: ${supported.join(", ") || "(none reported)"} -> ${resolved}`
+      );
+      setRecogLocale(resolved);
     });
     return () => {
       cancelled = true;
     };
-  }, [recognizer, lang]);
+  }, [recognizer, lang, recogOverride]);
 
   const refreshPeople = useCallback(async () => {
     try {
@@ -196,6 +202,12 @@ export default function App() {
         onState: (msg) => {
           setServerState(msg);
           setLookAround(msg.lookAround);
+          // Voice enroll/forget bumps peopleRev server-side: refetch the
+          // dashboard count (connect already does the first fetch).
+          if (peopleRevRef.current !== msg.peopleRev) {
+            peopleRevRef.current = msg.peopleRev;
+            void refreshPeople();
+          }
         },
         onUtteranceSent: (ts) => {
           utteranceTsRef.current = ts;
@@ -477,6 +489,8 @@ export default function App() {
         voiceMode,
         changeVoiceMode: setVoiceMode,
         recogLocale,
+        recogOverride,
+        changeRecogOverride: setRecogOverride,
         showCamera,
         changeShowCamera: setShowCamera,
         ttsRate,

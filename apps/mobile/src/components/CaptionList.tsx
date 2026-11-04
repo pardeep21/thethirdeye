@@ -24,6 +24,7 @@ const KIND_LABEL: Record<SpeakKind, string> = {
   people: "People",
   scene: "Look around",
   system: "System",
+  heard: "Heard",
 };
 
 function kindVisual(kind: SpeakKind | null): { icon: IconName | "rupee"; fg: string; bg: string } {
@@ -34,6 +35,8 @@ function kindVisual(kind: SpeakKind | null): { icon: IconName | "rupee"; fg: str
       return { icon: "person", fg: colors.text, bg: colors.chip };
     case "scene":
       return { icon: "eye", fg: colors.second, bg: colors.secondBg };
+    case "heard":
+      return { icon: "mic", fg: colors.text, bg: colors.chip };
     default:
       return { icon: "chat", fg: colors.text, bg: colors.chip };
   }
