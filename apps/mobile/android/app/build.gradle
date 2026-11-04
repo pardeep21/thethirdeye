@@ -88,6 +88,16 @@ android {
     compileSdk rootProject.ext.compileSdkVersion
 
     namespace 'com.thethirdeye.app'
+    // Native (CMake/ninja) intermediates live outside the module: the stock
+    // app/.cxx path overflows the 260-char ninja limit on Windows for the
+    // release (RelWithDebInfo) rnsvg codegen target (263 chars). Overridable
+    // per machine via thethirdeye.cxxDir in ~/.gradle/gradle.properties.
+    // NOTE: hand edit like the signing block below; expo prebuild wipes it.
+    externalNativeBuild {
+        cmake {
+            buildStagingDirectory = new File(findProperty('thethirdeye.cxxDir') ?: 'D:/cxx-thethirdeye')
+        }
+    }
     defaultConfig {
         applicationId 'com.thethirdeye.app'
         minSdkVersion rootProject.ext.minSdkVersion
