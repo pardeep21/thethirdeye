@@ -56,7 +56,8 @@ flowchart LR
 
 One WebSocket carries frames, audio and commands up; `speak` messages come
 down with text, language, priority (P1 answers beat P3 scene chatter) and a
-kind for the caption icons.
+kind for the caption icons. Later, glasses replace only the capture and
+audio parts (camera, gate, mic, TTS/earpiece); the server side stays as is.
 
 ## Models (exact)
 
@@ -64,7 +65,7 @@ kind for the caption icons.
 |---|---|---|
 | Cash/people/scene triage, conversation, find | `muse-spark-1.3` (Meta Model API) | Reasoning model: `reasoning_effort: "minimal"`, JSON mode with prompt-only fallback |
 | Face detection + embedding | YuNet + ArcFace via `deepface==0.0.103` | Local Python sidecar (`apps/faces`), ArcFace 512-d, threshold 0.45 + 0.08 margin |
-| Speech recognition | Android on-device STT | `expo-speech-recognition`; server-audio mode is a fallback, not Meta STT |
+| Speech recognition | Android STT | `expo-speech-recognition`, `pa-IN` with `hi-IN`/`en-IN` fallback (the S23 test phone has no `pa-IN`); server-audio mode is a fallback, not Meta STT |
 | Speech output | Android TTS (`expo-speech`) | `pa-IN` / `hi-IN` / `en-IN`; Meta has no TTS model, so this is the honest choice |
 
 "Find X" is Spark's locate call, not SAM 3.1 (stretch goal, skipped).
@@ -110,7 +111,7 @@ Copy `apps/server/.env.example` to `apps/server/.env`:
 | `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | OpenRouter-served Muse |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Plain OpenAI or local Ollama (`PROVIDER=local` defaults to `muse-glimmer`) |
 | `AGENT_MODEL` / `AGENT_MAX_TOKENS` / `AGENT_IMAGE_PX` / `AGENT_TOOL_MODE` / `AGENT_REASONING_EFFORT` / `AGENT_DEBUG_DIR` | Conversational agent tuning |
-| `TRIAGE_MAX_TOKENS` / `SCENE_MAX_TOKENS` / `META_REASONING_EFFORT` / `FIND_MAX_TOKENS` / `CAPTURE_TIMEOUT_MS` | Perception tuning |
+| `TRIAGE_MAX_TOKENS` / `SCENE_MAX_TOKENS` / `META_REASONING_EFFORT` / `FIND_MAX_TOKENS` / `CAPTURE_TIMEOUT_MS` / `TRIAGE_IMAGE_PX` | Perception tuning |
 | `APP_TOKEN` | Shared WS token (phone sends it in `hello`; unset = open server for local dev only) |
 | `FACES` / `FACES_EVERY_N` | `sidecar` (auto if `:8765` answers) or `stub`; detection cadence |
 | `UW_CASH_CROP` | Centre-60% crop for the cash prompt on ultra-wide frames (`0` disables) |
@@ -142,9 +143,11 @@ this README works with no key.
 
 ## Privacy
 
-- Frames are processed and discarded; no frame or face crop is ever written
-  to disk. Debug logs carry sizes, never image bytes (`DEBUG_LOG_IMAGES`
-  exists for local diagnosis and defaults off).
+- Frames are processed and discarded: not stored by TheThirdEye — no frame
+  or face crop is ever written to disk — but every gated frame is sent to
+  Meta's standard (non-training) tier for vision. Debug logs carry sizes,
+  never image bytes (`DEBUG_LOG_IMAGES` exists for local diagnosis and
+  defaults off).
 - The SQLite store keeps face *embeddings* (number vectors), never photos.
 - Strangers are never named or persisted. Enrolling a face requires a
   recorded "haan" — voice consent is stored with the enrollment, and
@@ -154,12 +157,16 @@ this README works with no key.
 
 ## Limitations (honest)
 
-- The cash eval photo set is one image: the "≥95% clear" tuning and the
-  ultra-wide crop benefit are unproven until the daylight photo set exists.
-- Spark reasoning latency is seconds per call (2.7–8.6 s on the two live
-  probes); the 3.5 s p50 answer budget needs live `/stats` confirmation.
+- Cash eval (live, contributor tier): 59/60 correct (98.3%) on 30 clear
+  photos (5 per denomination), zero wrong values — the one miss said
+  "unsure". Triage p50 2.9 s / p95 4.9 s, so the 3.5 s p50 answer budget
+  is still tight end to end. Hard-set (folded/angled/dim) photos pending.
+- Spark reasoning latency is seconds per call (2.7–8.6 s on the first live
+  probes); the 3.5 s p50 answer budget needs live `/stats` confirmation
+  (proactive triage p50/p95 is now in `/stats` as `triageMs`).
 - Cloud face recognition is off (`FACES=stub` in Docker/Render): "who's
   here" by name needs the laptop sidecar beside the server.
-- Hindi/English are supported but Punjabi-first; the TTS voice choice is
-  still awaiting the user's ear test; enrolment quality gates assume a
+- Punjabi-first with Hindi/English fallback, but the S23 test phone has no
+  `pa-IN` recognition (falls back to `hi-IN`/`en-IN`); the TTS voice choice
+  is still awaiting the user's ear test; enrolment quality gates assume a
   cooperative, front-facing subject.
