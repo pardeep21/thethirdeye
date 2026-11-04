@@ -166,6 +166,60 @@ const FIND_STOP = new Set<string>([
   "और",
 ]);
 
+const CONFIRM_YES = [
+  "haan",
+  "ha",
+  "han",
+  "hanji",
+  "haanji",
+  "haan ji",
+  "han ji",
+  "ji",
+  "yes",
+  "yeah",
+  "yep",
+  "yup",
+  "ok",
+  "okay",
+  "accha",
+  "achha",
+  "acha",
+  "theek",
+  "theek hai",
+  "ਹਾਂ",
+  "ਜੀ",
+  "हां",
+  "हाँ",
+  "जी",
+  "अच्छा",
+];
+const CONFIRM_NO = [
+  "na",
+  "naa",
+  "nah",
+  "nahi",
+  "nahin",
+  "no",
+  "nope",
+  "ਨਾ",
+  "ਨਹੀਂ",
+  "ना",
+  "नहीं",
+  "न",
+];
+
+/**
+ * A bare yes/no as the whole utterance. Used only when a confirm
+ * question is pending, so longer sentences always reach the agent.
+ */
+export function matchConfirm(text: string): "yes" | "no" | null {
+  const norm = normalize(text).trim();
+  if (!norm) return null;
+  if ((CONFIRM_YES as string[]).includes(norm)) return "yes";
+  if ((CONFIRM_NO as string[]).includes(norm)) return "no";
+  return null;
+}
+
 function normalize(text: string): string {
   return ` ${text
     .toLowerCase()

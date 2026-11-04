@@ -14,8 +14,14 @@ export const TRACK_IOU_MIN = 0.3;
 export const TRACK_TTL_MS = 120_000;
 /** Best samples kept per track, ranked by sampleScore. */
 export const TRACK_SAMPLES_MAX = 8;
-/** A sample counts toward enrollment quality above this score. */
-export const TRACK_SAMPLE_MIN_SCORE = 50;
+/**
+ * A sample counts toward enrollment quality above this score
+ * (score = sizePx x sharpness x frontality). Deliberately low: a 50px
+ * face at blur 40 passes, so "yaad rakh" just works; only tiny or
+ * smeared detections fall below. Facing the camera is not required
+ * (unknown yaw scores full marks).
+ */
+export const TRACK_SAMPLE_MIN_SCORE = 20;
 
 export interface TrackSample {
   embedding: number[];

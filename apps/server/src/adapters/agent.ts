@@ -172,7 +172,7 @@ export class MockAgentBrain implements AgentBrain {
 }
 
 export const DEFAULT_AGENT_MODEL = "muse-spark-1.3";
-export const DEFAULT_AGENT_MAX_TOKENS = 600;
+export const DEFAULT_AGENT_MAX_TOKENS = 900;
 export const DEFAULT_AGENT_IMAGE_PX = 640;
 
 function positiveIntFromEnv(name: string, fallback: number): number {

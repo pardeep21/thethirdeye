@@ -128,7 +128,7 @@ test("earcon/capture_now/state guards", () => {
   assert.equal(isCaptureNowMessage({ type: "capture_now", reqId: "r1", lens: "main" }), true);
   assert.equal(isCaptureNowMessage({ type: "capture_now" }), false);
   assert.equal(
-    isStateMessage({ type: "state", lookAround: false, muted: false, agentBusy: true, lang: "pa" }),
+    isStateMessage({ type: "state", lookAround: false, muted: false, agentBusy: true, lang: "pa", peopleRev: 3 }),
     true
   );
   assert.equal(

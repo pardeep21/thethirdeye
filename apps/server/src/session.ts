@@ -11,8 +11,13 @@ export interface Turn {
   text: string;
 }
 
-/** History keeps the last 10 turns (5 user/assistant pairs). */
-export const HISTORY_MAX_TURNS = 10;
+/**
+ * History keeps the last 4 turns (2 user/assistant pairs). Deliberately
+ * short: every turn costs prompt tokens and latency, and stale turns make
+ * the model slower and more ramble-prone (field log: 1267 -> 1858 tokens
+ * across one session, ending in timeouts and truncated JSON).
+ */
+export const HISTORY_MAX_TURNS = 4;
 
 /** A voice-enrollment/forget flow waiting on the user (all expire quickly). */
 export type PendingAction =

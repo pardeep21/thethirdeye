@@ -6,14 +6,14 @@ import { HISTORY_MAX_TURNS, Session, readChunk, sceneFromPerception } from "./se
 import type { SceneTriage } from "./protocol.js";
 import { UtteranceStats } from "./stats.js";
 
-test("history keeps the last 10 turns", () => {
+test("history keeps the last 4 turns", () => {
   const s = new Session();
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i < 10; i++) {
     s.pushTurn({ role: i % 2 === 0 ? "user" : "assistant", text: `t${i}` });
   }
   assert.equal(s.history.length, HISTORY_MAX_TURNS);
-  assert.equal(s.history[0]?.text, "t4");
-  assert.equal(s.history[9]?.text, "t13");
+  assert.equal(s.history[0]?.text, "t6");
+  assert.equal(s.history[3]?.text, "t9");
 });
 
 test("session defaults: pa, gurmukhi, idle", () => {
@@ -132,15 +132,20 @@ test("stats snapshot percentiles over samples", () => {
     modelMs: { p50: 0, p95: 0 },
     totalMs: { p50: 0, p95: 0 },
     timeouts: { triage: 0, scene: 0, agent: 0, answer: 0, find: 0 },
+    triageSamples: 0,
+    triageMs: { p50: 0, p95: 0 },
   });
   for (let i = 1; i <= 10; i++) {
     st.record({ frameWaitMs: i * 10, modelMs: i * 100, totalMs: i * 1000 });
+    st.recordTriage(i * 5);
   }
   const snap = st.snapshot();
   assert.equal(snap.utterances, 10);
   assert.deepEqual(snap.frameWaitMs, { p50: 50, p95: 100 });
   assert.deepEqual(snap.modelMs, { p50: 500, p95: 1000 });
   assert.deepEqual(snap.totalMs, { p50: 5000, p95: 10000 });
+  assert.equal(snap.triageSamples, 10);
+  assert.deepEqual(snap.triageMs, { p50: 25, p95: 50 });
 });
 
 test("stats keep only the last 50 samples", () => {

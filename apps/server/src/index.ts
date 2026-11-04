@@ -20,7 +20,7 @@ import {
   type SpeakMessage,
 } from "./protocol.js";
 import { LatestFrameStore } from "./store.js";
-import { centreCrop, uwCashCropFromEnv } from "./images.js";
+import { centreCrop, fitLongestSide, triageImagePxFromEnv, uwCashCropFromEnv } from "./images.js";
 import { createAdapters, providerFromEnv, type NamedTriage } from "./adapters/factory.js";
 import type { AgentBrain, AgentOutput } from "./adapters/agent.js";
 import { DecisionEngine, type DecisionEvent } from "./decision.js";
@@ -53,7 +53,7 @@ import {
   ModelTimeoutError,
   type TimeoutStage,
 } from "./timeouts.js";
-import { isBareMore, routeIntent } from "./intent.js";
+import { isBareMore, matchConfirm, routeIntent } from "./intent.js";
 import { PeopleStore } from "./faces/store.js";
 import type { FaceEmbedder } from "./faces/embed.js";
 import { checkEnrollFace } from "./faces/quality.js";
@@ -154,6 +154,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
   const adapters = createAdapters(provider, { store: people, embedder });
   const facesEveryN = facesEveryNFromEnv();
   const uwCrop = uwCashCropFromEnv();
+  const triagePx = triageImagePxFromEnv();
   const agent = opts?.agent ?? adapters.agent;
   const triage = opts?.triage ?? adapters.triage;
   const finder = opts?.finder ?? adapters.finder;
@@ -254,7 +255,24 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     const narrator = new SceneNarrator();
     const tracker = new FaceTracker();
     const pendingCaptures = new Map<string, (f: SessionFrame) => void>();
+    // Connection diagnostics: frames + user turns served, logged on close
+    // (reconnects start a fresh session, so this shows wipe frequency).
+    let frameCount = 0;
+    let utterCount = 0;
+    console.log(`client connected (session ${session.id})`);
     let frameNo = 0;
+    // Frame backpressure: one triage call in flight per session, plus a
+    // single latest-pending slot. A newer frame replaces an older waiting
+    // one, so stale frames are never triaged and results stay in order.
+    let triageBusy = false;
+    interface PendingFrame {
+      jpeg: Buffer;
+      hfovDeg: number;
+      ts: number;
+      receivedAt: number;
+      lens: "main" | "ultrawide" | undefined;
+    }
+    let pendingFrame: PendingFrame | null = null;
     // WS auth: when APP_TOKEN is set, the first message must be a hello
     // carrying it; anything else (or a wrong token) closes the socket.
     const appToken = appTokenFromEnv();
@@ -272,6 +290,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         muted: session.muted,
         agentBusy: session.agentBusy,
         lang: session.lang,
+        peopleRev: people.revision(),
       });
     };
 
@@ -358,16 +377,19 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
 
     /**
      * Cash-prompt input: the centre 60% when the lens is ultra-wide
-     * (notes at counter distance sit central; fail-open to full frame).
+     * (notes at counter distance sit central; fail-open to full frame),
+     * then fit to TRIAGE_IMAGE_PX longest side (downscale only).
      */
     async function cashInput(jpeg: Buffer, lens: "main" | "ultrawide" | undefined): Promise<Buffer> {
-      if (!uwCrop || lens !== "ultrawide") return jpeg;
-      try {
-        return await centreCrop(jpeg);
-      } catch (err) {
-        console.error("uw crop failed, using full frame:", err instanceof Error ? err.message : err);
-        return jpeg;
+      let out = jpeg;
+      if (uwCrop && lens === "ultrawide") {
+        try {
+          out = await centreCrop(out);
+        } catch (err) {
+          console.error("uw crop failed, using full frame:", err instanceof Error ? err.message : err);
+        }
       }
+      return fitLongestSide(out, triagePx);
     }
 
     /** Fresh cash read; shared by the howmuch fast path and cash_check. */
@@ -453,6 +475,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
 
     async function handleUtterance(text: string): Promise<void> {
       console.log(`heard: ${text}`);
+      utterCount++;
       const tRx = Date.now();
 
       // Fast path: trivial commands never reach the LLM.
@@ -480,6 +503,44 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         }
         console.log(`utterance fast-path (cancel) total=${Date.now() - tRx}ms`);
         return;
+      }
+      // Fast path: a bare yes/no answers a pending consent/confirm
+      // question directly. The agent path is too slow and flaky for a
+      // one-word answer (timeouts, truncated JSON), and the stored
+      // pending name cannot mismatch the way a model echo can.
+      const confirm = matchConfirm(text);
+      if (confirm !== null) {
+        const pending = session.pendingAction;
+        if (
+          pending !== null &&
+          (pending.kind === "consent" ||
+            pending.kind === "duplicate-confirm" ||
+            pending.kind === "forget-confirm")
+        ) {
+          engine.cancel();
+          const said = await applyAgentActions(
+            [{ tool: "confirm_consent", name: pending.name, granted: confirm === "yes" }],
+            {
+              session,
+              engine,
+              send,
+              cashCheck: cashRead,
+              narrator,
+              people: { store: people, tracker, faces: adapters.faces },
+              utterance: text,
+              find: { finder },
+              onTimeout: (stage, ms) => noteTimeout(stage, ms),
+            }
+          );
+          // State first: a mutation bumps peopleRev, so the phone
+          // refetches the people count while the answer speaks.
+          pushState();
+          sendDrained();
+          session.pushTurn({ role: "user", text });
+          session.pushTurn({ role: "assistant", text: said ?? "" });
+          console.log(`utterance fast-path (confirm) total=${Date.now() - tRx}ms`);
+          return;
+        }
       }
       if (intent.kind === "howmuch") {
         engine.cancel();
@@ -672,6 +733,51 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       }
     }
 
+    /**
+     * Triage one frame: look-around frames take the scene prompt (cash +
+     * people with coordinates + objects); otherwise the fast cash-only
+     * prompt. Faces run every Nth frame (FACES_EVERY_N; slow machines
+     * skip). Always called serially via the backpressure pump above.
+     */
+    async function processFrame(f: PendingFrame): Promise<SpeakMessage[]> {
+      try {
+        const runFaces = shouldRunFaces(frameNo++, facesEveryN);
+        const startedAt = Date.now();
+        const triageCall =
+          session.lookAround
+            ? withTimeout(triage.triageScene(f.jpeg), triageTimeoutFromEnv(), "scene")
+            : withTimeout(
+                triage.triage(await cashInput(f.jpeg, f.lens)),
+                triageTimeoutFromEnv(),
+                "triage"
+              );
+        const [result, matched] = await Promise.all([
+          triageCall,
+          runFaces ? adapters.faces.matchDetailed(f.jpeg) : Promise.resolve([] as MatchedFace[]),
+        ]);
+        stats.recordTriage(Date.now() - startedAt);
+        // Stamp with the frame's arrival time, not completion time, so the
+        // stability rule and the re-arm/dedupe windows track what the
+        // camera saw when, even when triage takes seconds.
+        const frameMs = f.receivedAt;
+        const tracks = runFaces ? tracker.update(matched, f.hfovDeg, frameMs) : tracker.liveTracks();
+        const fresh = tracks.filter((t) => frameMs - t.lastSeen <= SCENE_TRACK_MAX_AGE_MS);
+        session.sceneState = sceneFromPerception(result, fresh, session.lookAround, f.hfovDeg);
+        engine.onFrame(result, fresh, frameMs);
+        for (const ev of narrator.onScene(result, f.hfovDeg)) engine.announceScene(ev);
+      } catch (err) {
+        if (err instanceof ModelTimeoutError) {
+          // Proactive timeout: drop silently, never speak stale or fake.
+          // (Not recorded in triageMs: a timeout budget is not a sample.)
+          noteTimeout(err.stage, err.timeoutMs);
+          return [];
+        }
+        console.error("perception failed:", err instanceof Error ? err.message : err);
+        return [];
+      }
+      return drain();
+    }
+
     async function handleMessage(raw: string): Promise<SpeakMessage[]> {
       let msg: unknown;
       try {
@@ -696,40 +802,28 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         return [];
       }
       if (isFrameMessage(msg)) {
+        frameCount++;
         const jpeg = Buffer.from(msg.jpegBase64, "base64");
         const hfovDeg = msg.hfovDeg ?? DEFAULT_HFOV_DEG;
-        frames.set({ jpeg, width: msg.width, height: msg.height, ts: msg.ts, receivedAt: Date.now(), lens: msg.lens });
-        const sessionFrame: SessionFrame = { jpeg, hfovDeg, ts: msg.ts, receivedAt: Date.now() };
+        const receivedAt = Date.now();
+        frames.set({ jpeg, width: msg.width, height: msg.height, ts: msg.ts, receivedAt, lens: msg.lens });
+        const sessionFrame: SessionFrame = { jpeg, hfovDeg, ts: msg.ts, receivedAt };
         session.lastFrame = sessionFrame;
         if (msg.reqId) pendingCaptures.get(msg.reqId)?.(sessionFrame);
+        pendingFrame = { jpeg, hfovDeg, ts: msg.ts, receivedAt, lens: msg.lens };
+        if (triageBusy) return [];
+        triageBusy = true;
+        const out: SpeakMessage[] = [];
         try {
-          // Look-around frames take the scene prompt (cash + people with
-          // coordinates + objects); otherwise the fast cash-only prompt.
-          // Faces run every Nth frame (FACES_EVERY_N; slow machines skip).
-          const runFaces = shouldRunFaces(frameNo++, facesEveryN);
-          const triageCall = session.lookAround
-            ? withTimeout(triage.triageScene(jpeg), triageTimeoutFromEnv(), "scene")
-            : withTimeout(triage.triage(await cashInput(jpeg, msg.lens)), triageTimeoutFromEnv(), "triage");
-          const [result, matched] = await Promise.all([
-            triageCall,
-            runFaces ? adapters.faces.matchDetailed(jpeg) : Promise.resolve([] as MatchedFace[]),
-          ]);
-          const nowMs = Date.now();
-          const tracks = runFaces ? tracker.update(matched, hfovDeg, nowMs) : tracker.liveTracks();
-          const fresh = tracks.filter((t) => nowMs - t.lastSeen <= SCENE_TRACK_MAX_AGE_MS);
-          session.sceneState = sceneFromPerception(result, fresh, session.lookAround, hfovDeg);
-          engine.onFrame(result, fresh, nowMs);
-          for (const ev of narrator.onScene(result, hfovDeg)) engine.announceScene(ev);
-        } catch (err) {
-          if (err instanceof ModelTimeoutError) {
-            // Proactive timeout: drop silently, never speak stale or fake.
-            noteTimeout(err.stage, err.timeoutMs);
-            return [];
+          while (pendingFrame !== null) {
+            const next = pendingFrame;
+            pendingFrame = null;
+            out.push(...(await processFrame(next)));
           }
-          console.error("perception failed:", err instanceof Error ? err.message : err);
-          return [];
+        } finally {
+          triageBusy = false;
         }
-        return drain();
+        return out;
       }
       if (isAudioMessage(msg)) {
         try {
@@ -783,6 +877,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         if (ws.readyState !== WebSocket.OPEN) return;
         for (const reply of replies) send(reply);
       });
+    });
+    ws.on("close", (code: number) => {
+      console.log(
+        `client disconnected (session ${session.id} code=${code}): ${frameCount} frames, ${utterCount} utterances`
+      );
     });
   });
 

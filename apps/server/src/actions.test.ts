@@ -109,7 +109,7 @@ test("look_around toggles the session and pushes state", async () => {
   assert.equal(ctx.session.lookAround, true);
   assert.equal(ctx.session.sceneState.lookAround, true);
   assert.deepEqual(ctx.sent, [
-    { type: "state", lookAround: true, muted: false, agentBusy: false, lang: "pa" },
+    { type: "state", lookAround: true, muted: false, agentBusy: false, lang: "pa", peopleRev: 0 },
   ]);
   await applyAgentActions([{ tool: "look_around", on: false }], ctx);
   assert.equal(ctx.session.lookAround, false);
@@ -150,8 +150,8 @@ test("find locates the noun on the fresh frame and speaks the clock", async () =
     frame: { jpeg: Buffer.alloc(0), hfovDeg: 100 },
   };
   const said = await applyAgentActions([{ tool: "find", noun: "Kainchi" }], ctx);
-  assert.equal(said, "Kainchi, 1 o'clock, nede");
-  assert.equal(ctx.engine.takeSpeak()[0]?.text, "Kainchi, 1 o'clock, nede");
+  assert.equal(said, "Kainchi, 1 vje, nede");
+  assert.equal(ctx.engine.takeSpeak()[0]?.text, "Kainchi, 1 vje, nede");
 });
 
 test("find miss says Nahi labhi, low confidence hedges", async () => {
@@ -166,7 +166,7 @@ test("find miss says Nahi labhi, low confidence hedges", async () => {
   };
   assert.equal(
     await applyAgentActions([{ tool: "find", noun: "Kainchi" }], unsure),
-    "Shayad Kainchi, 1 o'clock"
+    "Shayad Kainchi, 1 vje"
   );
 });
 
@@ -214,9 +214,18 @@ test("remember with a good track asks consent and pends it", async () => {
   ctx.store.close();
 });
 
-test("remember with too few samples asks for a clearer face", async () => {
+test("remember with a single passing sample asks consent", async () => {
   const ctx = makePeopleCtx();
-  const ref = seedTrack(ctx, [0.4, 0.4, 0.2, 0.2], [1, 0], 2);
+  const ref = seedTrack(ctx, [0.4, 0.4, 0.2, 0.2], [1, 0], 1);
+  const said = await applyAgentActions([{ tool: "remember_person", ref, name: "Ravi" }], ctx);
+  assert.equal(said, "Ravi nu yaad rakhaan? Haan ya na dasso");
+  assert.equal(ctx.session.pendingAction?.kind, "consent");
+  ctx.store.close();
+});
+
+test("remember with only below-floor samples asks for a clearer face", async () => {
+  const ctx = makePeopleCtx();
+  const ref = seedTrack(ctx, [0.4, 0.4, 0.2, 0.2], [1, 0], 2, quality({ blur: 5, sizePx: 20 }));
   const said = await applyAgentActions([{ tool: "remember_person", ref, name: "Ravi" }], ctx);
   assert.equal(said, "Chehra saaf dikhao, phir dasso");
   assert.equal(ctx.session.pendingAction?.kind, "remember-retry");

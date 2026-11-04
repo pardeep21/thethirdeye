@@ -457,7 +457,7 @@ test("utterance agent path: capture_now -> frame -> mock agent -> rendered clock
       sendFrame(ws, { reqId: capture.reqId, lens: "main", hfovDeg: 100 });
       const late = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 2000);
       const answer = late.find((m) => m.type === "speak" && m.kind === "answer");
-      assert.equal(answer?.text, "Mock saamne: counter te samaan 12 o'clock");
+      assert.equal(answer?.text, "Mock saamne: counter te samaan 12 vje");
       assert.equal(answer?.priority, "P1");
       assert.equal(agent.inputs.length, 1);
       assert.ok(agent.inputs[0]?.image, "agent saw the fresh frame");
@@ -512,8 +512,9 @@ test("voice enrollment over WS: remember -> consent -> saved -> known arrival", 
       assert.equal(agent.inputs.length, 1);
       assert.equal(agent.inputs[0]?.scene.people[0]?.ref, "P1");
 
-      // Turn 2: "haan" -> enrolled with voice consent, nothing else speaks.
-      sendUtterance(ws, "haan");
+      // Turn 2: a phrased yes still goes through the agent (the bare
+      // "haan" fast path is covered by the next test).
+      sendUtterance(ws, "haan, Ravi nu yaad rakh");
       const early2 = await collectUntil(ws, (m) => m.type === "capture_now", 2000);
       const cap2 = early2.find((m) => m.type === "capture_now") as { reqId: string };
       sendFrame(ws, { reqId: cap2.reqId });
@@ -539,15 +540,82 @@ test("voice enrollment over WS: remember -> consent -> saved -> known arrival", 
       assert.equal(listed.length, 1);
       assert.equal(listed[0].name, "Ravi");
       assert.equal(listed[0].consent_method, "voice");
-      assert.equal(listed[0].consent_text, "haan");
+      assert.equal(listed[0].consent_text, "haan, Ravi nu yaad rakh");
 
       // Two more frames: the enrolled face is recognised (2-of-3) with a clock.
       sendFrame(ws);
       sendFrame(ws);
       const known = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "people", 2000);
       const arrival = known.find((m) => m.type === "speak" && m.kind === "people");
-      assert.equal(arrival?.text, "Ravi ਆ ਗਿਆ, 11 o'clock");
+      assert.equal(arrival?.text, "Ravi ਆ ਗਿਆ, 11 vje");
       assert.equal(arrival?.priority, "P2");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("bare haan answers pending consent without the agent (fast path)", async () => {
+  const agent = new MockAgentBrain([
+    { say: null, positions: [], actions: [{ tool: "remember_person", ref: "P1", name: "Ravi" }] },
+  ]);
+  const triage = new MockVisionTriage([
+    { notes: [{ denomination: 500, confidence: 0.9 }], people: [] },
+    { notes: [{ denomination: 100, confidence: 0.9 }], people: [] },
+    { notes: [{ denomination: 50, confidence: 0.9 }], people: [] },
+    { notes: [], people: [] },
+  ]);
+  const t = await startTestServer(new FixedEmbedder([1, 0]), agent, triage);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      // Three seed frames: one speak each, and the face track collects
+      // enough passing samples for the consent question.
+      for (const want of ["ਪੰਜ ਸੌ ਦਾ ਨੋਟ", "ਸੌ ਦਾ ਨੋਟ", "ਪੰਜਾਹ ਦਾ ਨੋਟ"]) {
+        sendFrame(ws);
+        const raw = await nextMessage(ws);
+        assert.equal((JSON.parse(raw) as { text: string }).text, want);
+      }
+
+      // Turn 1 through the agent: the consent question speaks.
+      sendUtterance(ws, "eh Ravi hai, yaad rakh");
+      const early = await collectUntil(ws, (m) => m.type === "capture_now", 2000);
+      const cap = early.find((m) => m.type === "capture_now") as { reqId: string };
+      sendFrame(ws, { reqId: cap.reqId });
+      const asked = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "answer", 2000);
+      assert.equal(
+        asked.find((m) => m.type === "speak" && m.kind === "answer")?.text,
+        "Ravi nu yaad rakhaan? Haan ya na dasso"
+      );
+      assert.equal(agent.inputs.length, 1);
+
+      // Turn 2: bare "haan" enrolls with no capture_now and no agent call.
+      sendUtterance(ws, "haan");
+      const saved = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "answer", 2000);
+      assert.equal(
+        saved.find((m) => m.type === "speak" && m.kind === "answer")?.text,
+        "Ravi yaad ho gaya"
+      );
+      assert.ok(
+        saved.every((m) => m.type !== "capture_now"),
+        "fast-path confirm must not request a frame"
+      );
+      assert.equal(agent.inputs.length, 1);
+      // The enrollment pushes state with a bumped peopleRev so the phone
+      // refetches its dashboard count.
+      assert.ok(
+        saved.some((m) => m.type === "state" && m.peopleRev === 1),
+        `expected peopleRev 1 state, got: ${JSON.stringify(saved)}`
+      );
+
+      const listed = (await (await fetch(`http://127.0.0.1:${t.port}/people`)).json()) as Array<{
+        name: string;
+        consent_text: string;
+      }>;
+      assert.equal(listed.length, 1);
+      assert.equal(listed[0].consent_text, "haan");
     } finally {
       ws.close();
     }
@@ -576,7 +644,7 @@ test("utterance find action: capture on the current lens -> clock speak", async 
       sendFrame(ws, { reqId: capture.reqId, lens: "main", hfovDeg: 100 });
       const late = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "answer", 2000);
       const answer = late.find((m) => m.type === "speak" && m.kind === "answer");
-      assert.equal(answer?.text, "Kainchi, 1 o'clock, nede");
+      assert.equal(answer?.text, "Kainchi, 1 vje, nede");
     } finally {
       ws.close();
     }
@@ -671,6 +739,122 @@ test("ultra-wide frames reach the cash prompt as a centre crop", async () => {
   }
 });
 
+test("TRIAGE_IMAGE_PX downscales the cash prompt input", async () => {
+  process.env.TRIAGE_IMAGE_PX = "50";
+  const triage = new MockVisionTriage();
+  const t = await startTestServer(undefined, undefined, triage);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      const jpeg = await sharp({
+        create: { width: 100, height: 80, channels: 3, background: { r: 200, g: 100, b: 50 } },
+      })
+        .jpeg()
+        .toBuffer();
+      ws.send(
+        JSON.stringify({
+          type: "frame",
+          jpegBase64: jpeg.toString("base64"),
+          width: 100,
+          height: 80,
+          lens: "main",
+          ts: Date.now(),
+        })
+      );
+      await nextMessage(ws);
+      assert.equal(triage.imgs.length, 1);
+      const fitted = await sharp(triage.imgs[0]).metadata();
+      assert.equal(fitted.width, 50);
+      assert.equal(fitted.height, 40);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.TRIAGE_IMAGE_PX;
+    await t.done();
+  }
+});
+
+class CountingTriage extends MockVisionTriage {
+  inFlight = 0;
+  maxInFlight = 0;
+  calls = 0;
+  constructor(
+    script: TriageResult[],
+    private readonly firstDelayMs: number
+  ) {
+    super(script);
+  }
+  override async triage(img: Buffer): Promise<TriageResult> {
+    this.calls++;
+    this.inFlight++;
+    this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+    try {
+      if (this.calls === 1) await testDelay(this.firstDelayMs);
+      return await super.triage(img);
+    } finally {
+      this.inFlight--;
+    }
+  }
+}
+
+test("frame backpressure: one triage in flight, latest frame wins, speaks in order", async () => {
+  // Two script entries: with coalescing only two triage calls run (first
+  // frame + latest pending), so frame three consumes the second entry.
+  const triage = new CountingTriage(
+    [
+      { notes: [{ denomination: 500, confidence: 0.9 }], people: [] },
+      { notes: [{ denomination: 100, confidence: 0.9 }], people: [] },
+    ],
+    300
+  );
+  const t = await startTestServer(undefined, undefined, triage);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendFrame(ws); // slow first call holds the slot
+      sendFrame(ws); // must be replaced by the newer frame, not raced
+      sendFrame(ws); // latest pending: the only other frame triaged
+      const got = await collectUntil(
+        ws,
+        (m) => m.type === "speak" && m.text === "ਸੌ ਦਾ ਨੋਟ",
+        5000
+      );
+      const speaks = got.filter((m) => m.type === "speak").map((m) => m.text);
+      assert.deepEqual(speaks, ["ਪੰਜ ਸੌ ਦਾ ਨੋਟ", "ਸੌ ਦਾ ਨੋਟ"]);
+      assert.equal(triage.maxInFlight, 1);
+      assert.equal(triage.calls, 2);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("stats: proactive triage records round-trip samples", async () => {
+  const t = await startTestServer();
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendFrame(ws);
+      await nextMessage(ws); // cash speak proves the frame was triaged
+      const res = await fetch(`http://127.0.0.1:${t.port}/stats`);
+      const stats = (await res.json()) as {
+        triageSamples: number;
+        triageMs: { p50: number; p95: number };
+      };
+      assert.equal(stats.triageSamples, 1);
+      assert.ok(stats.triageMs.p50 >= 0);
+      assert.ok(stats.triageMs.p95 >= stats.triageMs.p50);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
 function waitForClose(ws: WebSocket): Promise<{ code: number; reason: string }> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("timed out waiting for close")), 5000);
@@ -755,7 +939,7 @@ test("capture_now timeout falls back to the last frame, then to no image", async
       sendFrame(ws);
       await collectUntil(ws, (m) => m.type === "speak" && m.kind === "cash", 2000);
       sendUtterance(ws, "hor ki hai");
-      await collectUntil(ws, (m) => m.type === "speak" && m.text === "Mock saamne: counter te samaan 12 o'clock", 2000);
+      await collectUntil(ws, (m) => m.type === "speak" && m.text === "Mock saamne: counter te samaan 12 vje", 2000);
       assert.equal(agent.inputs.length, 2);
       assert.ok(agent.inputs[1]?.image, "agent fell back to the last frame");
       assert.equal(agent.inputs[1]?.image?.hfovDeg, 66);
@@ -819,7 +1003,7 @@ test("agent look_around action toggles the session and pushes state", async () =
   }
 });
 
-test("agent history trims to the last 10 turns", async () => {
+test("agent history trims to the last 4 turns", async () => {
   process.env.CAPTURE_TIMEOUT_MS = "30";
   const agent = new MockAgentBrain([
     { say: "jawab", positions: [], actions: [] },
@@ -835,9 +1019,9 @@ test("agent history trims to the last 10 turns", async () => {
       assert.equal(agent.inputs.length, 7);
       assert.equal(agent.inputs[0]?.history.length, 0);
       assert.equal(agent.inputs[1]?.history.length, 2);
-      assert.equal(agent.inputs[5]?.history.length, 10);
-      assert.equal(agent.inputs[6]?.history.length, 10);
-      assert.equal(agent.inputs[6]?.history[0]?.text, "sawal 1");
+      assert.equal(agent.inputs[2]?.history.length, 4);
+      assert.equal(agent.inputs[6]?.history.length, 4);
+      assert.equal(agent.inputs[6]?.history[0]?.text, "sawal 4");
     } finally {
       ws.close();
     }
@@ -882,7 +1066,7 @@ test("look-around: mode on -> cash + summary -> silence -> one person clock line
       assert.equal(cash?.text, "ਪੰਜ ਸੌ ਦਾ ਨੋਟ");
       assert.equal(cash?.priority, "P1");
       const summary = first.find((m) => m.kind === "scene");
-      assert.equal(summary?.text, "Saamne: kursi 12 o'clock");
+      assert.equal(summary?.text, "Saamne kursi hai 12 vje");
       assert.equal(summary?.priority, "P2");
 
       // Identical frames: the same note and scene stay silent.
@@ -908,7 +1092,7 @@ test("look-around: mode on -> cash + summary -> silence -> one person clock line
       assert.equal(speaks.length, 1);
       assert.equal(speaks[0]?.kind, "people");
       assert.equal(speaks[0]?.priority, "P3");
-      assert.equal(speaks[0]?.text, "Ik banda, 11 o'clock");
+      assert.equal(speaks[0]?.text, "Ik banda, 11 vje");
     } finally {
       ws.close();
     }
@@ -971,7 +1155,7 @@ test("hor ki hai pages the scene as P1, then reports nothing notable", async () 
       const first = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "scene", 2000);
       assert.equal(
         first.find((m) => m.kind === "scene")?.text,
-        "Saamne: phone 12 o'clock, darwaza 1 o'clock, thaila 12 o'clock"
+        "Saamne phone hai 12 vje, darwaza hai 1 vje, thaila hai 12 vje"
       );
 
       sendUtterance(ws, "hor ki hai");
@@ -979,7 +1163,7 @@ test("hor ki hai pages the scene as P1, then reports nothing notable", async () 
       const paging = page.find((m) => m.type === "speak");
       assert.equal(paging?.priority, "P1");
       assert.equal(paging?.kind, "answer");
-      assert.equal(paging?.text, "Hor: switch 12 o'clock, kursi 12 o'clock");
+      assert.equal(paging?.text, "Hor switch hai 12 vje, kursi hai 12 vje");
       assert.ok(
         page.every((m) => m.type !== "capture_now"),
         "paging must not request a frame"
@@ -1007,7 +1191,7 @@ test("mode off clears narration; re-activation re-summarises", async () => {
       sendSceneFrame(ws);
       const first = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "scene", 2000);
       const text = first.find((m) => m.kind === "scene")?.text;
-      assert.equal(text, "Saamne: kursi 12 o'clock");
+      assert.equal(text, "Saamne kursi hai 12 vje");
 
       sendMode(ws, false);
       await collectUntil(ws, (m) => m.type === "state" && m.lookAround === false, 2000);

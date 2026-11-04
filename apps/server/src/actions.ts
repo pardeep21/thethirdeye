@@ -44,8 +44,12 @@ import {
   renderRenamed,
 } from "./phrases.js";
 
-/** Passing track samples needed before the consent question. */
-export const ENROLL_MIN_SAMPLES = 3;
+/**
+ * Passing track samples needed before the consent question. Just one:
+ * saying "yaad rakh" with a visible face should ask consent, not lecture
+ * about clarity. The score floor still refuses utter garbage.
+ */
+export const ENROLL_MIN_SAMPLES = 1;
 /** Enrolled embeddings kept per person (diverse best-first). */
 export const ENROLL_KEEP_SAMPLES = 5;
 
@@ -292,6 +296,7 @@ function pushState(ctx: ActionContext): void {
     muted: ctx.session.muted,
     agentBusy: ctx.session.agentBusy,
     lang: ctx.session.lang,
+    peopleRev: ctx.people?.store.revision() ?? 0,
   });
 }
 

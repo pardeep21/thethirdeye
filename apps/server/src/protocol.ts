@@ -70,7 +70,8 @@ export interface SettingsMessage {
 export type LensId = "main" | "ultrawide";
 
 /** What kind of line a speak message is. */
-export type SpeakKind = "cash" | "answer" | "people" | "scene" | "system";
+/** "heard" is phone-local (heard-transcript captions); the server never sends it. */
+export type SpeakKind = "cash" | "answer" | "people" | "scene" | "system" | "heard";
 
 /** Short UI blips the phone can play (locally or on server request). */
 export type EarconName = "ack" | "thinking" | "error" | "saved";
@@ -128,6 +129,8 @@ export interface StateMessage {
   muted: boolean;
   agentBusy: boolean;
   lang: string;
+  /** People-store revision: phones refetch /people when it changes. */
+  peopleRev: number;
 }
 
 export type UpMessage =
@@ -251,7 +254,8 @@ export function isStateMessage(v: unknown): v is StateMessage {
     typeof v.lookAround === "boolean" &&
     typeof v.muted === "boolean" &&
     typeof v.agentBusy === "boolean" &&
-    typeof v.lang === "string"
+    typeof v.lang === "string" &&
+    typeof v.peopleRev === "number"
   );
 }
 

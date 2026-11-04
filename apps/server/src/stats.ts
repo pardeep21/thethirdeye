@@ -25,6 +25,10 @@ export interface StatsSnapshot {
   modelMs: StageStats;
   totalMs: StageStats;
   timeouts: TimeoutCounts;
+  /** Proactive perception (triage/scene) round trips completed. */
+  triageSamples: number;
+  /** Proactive perception round-trip time (timeouts excluded). */
+  triageMs: StageStats;
 }
 
 export const STATS_MAX_SAMPLES = 50;
@@ -42,11 +46,18 @@ function stage(values: number[]): StageStats {
 
 export class UtteranceStats {
   private samples: UtteranceTiming[] = [];
+  private triage: number[] = [];
   private timeouts: TimeoutCounts = { triage: 0, scene: 0, agent: 0, answer: 0, find: 0 };
 
   record(t: UtteranceTiming): void {
     this.samples.push(t);
     if (this.samples.length > STATS_MAX_SAMPLES) this.samples.shift();
+  }
+
+  /** One proactive triage/scene round trip (callers skip timeouts). */
+  recordTriage(ms: number): void {
+    this.triage.push(ms);
+    if (this.triage.length > STATS_MAX_SAMPLES) this.triage.shift();
   }
 
   recordTimeout(stage: TimeoutStage): void {
@@ -64,6 +75,8 @@ export class UtteranceStats {
       modelMs: stage(this.samples.map((s) => s.modelMs)),
       totalMs: stage(this.samples.map((s) => s.totalMs)),
       timeouts: { ...this.timeouts },
+      triageSamples: this.triage.length,
+      triageMs: stage(this.triage),
     };
   }
 }

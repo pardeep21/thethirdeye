@@ -28,6 +28,13 @@ export interface StoredEmbedding {
 
 export class PeopleStore {
   private readonly db: Database.Database;
+  /** Bumps on every mutation; published in WS state so phones refetch. */
+  private rev = 0;
+
+  /** Current mutation revision (0 on a fresh store). */
+  revision(): number {
+    return this.rev;
+  }
 
   constructor(path: string) {
     this.db = new Database(path);
@@ -74,6 +81,7 @@ export class PeopleStore {
       return Number(row.lastInsertRowid);
     });
     const id = tx(clean, embeddings);
+    this.rev++;
     return {
       id,
       name: clean,
@@ -112,7 +120,9 @@ export class PeopleStore {
   renamePerson(id: number, name: string): boolean {
     const clean = name.trim();
     if (!clean) throw new Error("name is required");
-    return this.db.prepare("UPDATE people SET name = ? WHERE id = ?").run(clean, id).changes > 0;
+    const changed = this.db.prepare("UPDATE people SET name = ? WHERE id = ?").run(clean, id).changes > 0;
+    if (changed) this.rev++;
+    return changed;
   }
 
   removePerson(id: number): boolean {
@@ -120,7 +130,9 @@ export class PeopleStore {
       this.db.prepare("DELETE FROM embeddings WHERE person_id = ?").run(pid);
       return this.db.prepare("DELETE FROM people WHERE id = ?").run(pid).changes > 0;
     });
-    return tx(id);
+    const removed = tx(id);
+    if (removed) this.rev++;
+    return removed;
   }
 
   listPeople(): PersonRow[] {

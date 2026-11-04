@@ -134,7 +134,7 @@ test("agent env config: defaults and validation", () => {
     },
     () => {
       assert.equal(agentModelFromEnv(), "muse-spark-1.3");
-      assert.equal(agentMaxTokensFromEnv(), 600);
+      assert.equal(agentMaxTokensFromEnv(), 900);
       assert.equal(agentImagePxFromEnv(), 640);
       assert.equal(agentToolModeFromEnv(), "json");
       assert.equal(agentReasoningEffortFromEnv(), "minimal");
@@ -177,7 +177,7 @@ test("agent cost table prices Spark, null otherwise", () => {
 });
 
 test("system prompt carries the rules, schema and few-shots", () => {
-  assert.equal(AGENT_PROMPT_VERSION, 4);
+  assert.equal(AGENT_PROMPT_VERSION, 5);
   const prompt = buildAgentSystemPrompt({ lang: "pa", script: "gurmukhi" });
   assert.match(prompt, /blind shopkeeper/);
   assert.match(prompt, /15 words/);

@@ -12,6 +12,32 @@ export function uwCashCropFromEnv(): boolean {
   return raw !== "0" && raw !== "false" && raw !== "off";
 }
 
+/** Default longest side for cash-triage input: the phone already sends 768px. */
+export const DEFAULT_TRIAGE_IMAGE_PX = 768;
+
+export function triageImagePxFromEnv(): number {
+  const raw = process.env.TRIAGE_IMAGE_PX;
+  if (raw === undefined) return DEFAULT_TRIAGE_IMAGE_PX;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`TRIAGE_IMAGE_PX=${raw} must be a positive integer`);
+  }
+  return n;
+}
+
+/**
+ * Shrink a JPEG so its longest side is at most `px` (downscale only, never
+ * enlarge). Fail-open: any sharp error returns the input unchanged, so a
+ * corrupt frame still reaches triage instead of killing the frame path.
+ */
+export async function fitLongestSide(jpeg: Buffer, px: number): Promise<Buffer> {
+  try {
+    return await sharp(jpeg).resize(px, px, { fit: "inside", withoutEnlargement: true }).jpeg().toBuffer();
+  } catch {
+    return jpeg;
+  }
+}
+
 /** Centre crop of each side to `frac`, returned as a JPEG buffer. */
 export async function centreCrop(jpeg: Buffer, frac = UW_CASH_CROP_FRAC): Promise<Buffer> {
   const meta = await sharp(jpeg).metadata();
