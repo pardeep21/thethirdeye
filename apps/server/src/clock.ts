@@ -3,9 +3,11 @@
 // renders the words deterministically from the camera's field of view.
 import type { SpeakLang } from "./protocol.js";
 
-/** Clock position words. Code-mix keeps "o'clock" (DEV-PLAN section 2). */
-export function renderClock(hour: number, _lang: SpeakLang = "pa"): string {
-  return `${hour} o'clock`;
+/** Clock position words in the user's own language: vje/baje/o'clock. */
+export function renderClock(hour: number, lang: SpeakLang = "pa"): string {
+  if (lang === "hi") return `${hour} baje`;
+  if (lang === "en") return `${hour} o'clock`;
+  return `${hour} vje`;
 }
 
 export type PositionDistance = "near" | "mid" | "far";
@@ -36,7 +38,7 @@ export function distanceWord(d: PositionDistance, lang: SpeakLang): string {
 }
 
 /**
- * Replace {pos:N} placeholders with clock words ("2 o'clock", plus a
+ * Replace {pos:N} placeholders with clock words ("2 vje", plus a
  * distance word when the position carries one). Unknown indices are
  * dropped gracefully and leftover whitespace is collapsed.
  */

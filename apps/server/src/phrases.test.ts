@@ -33,10 +33,11 @@ function noteSeen(...denominations: Array<10 | 20 | 50 | 100 | 200 | 500>): Proa
   return { kind: "NOTE_SEEN", denominations, confidences: denominations.map(() => 0.9) };
 }
 
-test("clock words keep o'clock in code-mix", () => {
-  assert.equal(renderClock(2, "pa"), "2 o'clock");
-  assert.equal(renderClock(12, "hi"), "12 o'clock");
+test("clock words are vje/baje/o'clock per language", () => {
+  assert.equal(renderClock(2, "pa"), "2 vje");
+  assert.equal(renderClock(12, "hi"), "12 baje");
   assert.equal(renderClock(10, "en"), "10 o'clock");
+  assert.equal(renderClock(9), "9 vje");
 });
 
 test("agent unsure fallback", () => {
@@ -201,7 +202,7 @@ test("scene summary matches the spec shape", () => {
   };
   assert.equal(
     renderProactive(ev).text,
-    "Saamne: kursi 12 o'clock, darwaza 2 o'clock, ik banda 10 o'clock"
+    "Saamne kursi hai 12 vje, darwaza hai 2 vje, 10 vje ik banda hai"
   );
   assert.equal(
     renderProactive(ev, "en").text,
@@ -209,13 +210,13 @@ test("scene summary matches the spec shape", () => {
   );
   assert.equal(
     renderProactive(ev, "hi").text,
-    "Saamne: kursi 12 o'clock, darwaza 2 o'clock, ek aadmi 10 o'clock"
+    "Saamne kursi hai 12 baje, darwaza hai 2 baje, 10 baje ek aadmi hai"
   );
   const woman: ProactiveEvent = {
     kind: "SCENE_SUMMARY",
     items: [{ kind: "person", gender: "woman", clock: 3 }],
   };
-  assert.equal(renderProactive(woman).text, "Saamne: ik aurat 3 o'clock");
+  assert.equal(renderProactive(woman).text, "Saamne 3 vje ik aurat hai");
 });
 
 test("empty scene summary says nothing notable", () => {
@@ -232,13 +233,13 @@ test("scene updates lead with Hor/Aur/Also", () => {
       { kind: "object", label: "thaila", clock: 4 },
     ],
   };
-  assert.equal(renderProactive(ev).text, "Hor: phone 3 o'clock, thaila 4 o'clock");
+  assert.equal(renderProactive(ev).text, "Hor phone hai 3 vje, thaila hai 4 vje");
   assert.equal(renderProactive(ev, "en").text, "Also: phone 3 o'clock, thaila 4 o'clock");
   const single: ProactiveEvent = {
     kind: "SCENE_UPDATE",
     items: [{ kind: "object", label: "phone", clock: 3 }],
   };
-  assert.equal(renderProactive(single, "hi").text, "Aur: phone 3 o'clock");
+  assert.equal(renderProactive(single, "hi").text, "Aur phone hai 3 baje");
 });
 
 test("person lines use clock hours when x and hfov are available", () => {
@@ -247,7 +248,7 @@ test("person lines use clock hours when x and hfov are available", () => {
     count: 1,
     people: [{ position: "centre", distance: "near", gender: "man", age_range: "30", x: 0.8 }],
   };
-  assert.equal(renderProactive(ev, "pa", 100).text, "Ik banda, around 30, 1 o'clock");
+  assert.equal(renderProactive(ev, "pa", 100).text, "Ik banda, around 30, 1 vje");
   assert.equal(renderProactive(ev, "en", 100).text, "A man, around 30, 1 o'clock");
   const multi: ProactiveEvent = {
     kind: "PERSON_ARRIVED",
@@ -257,7 +258,7 @@ test("person lines use clock hours when x and hfov are available", () => {
       { position: "right", distance: "near", x: 0.9 },
     ],
   };
-  assert.equal(renderProactive(multi, "pa", 100).text, "Do log, 11 o'clock");
+  assert.equal(renderProactive(multi, "pa", 100).text, "Do log, 11 vje");
 });
 
 test("person lines keep rough words without coordinates", () => {
@@ -278,7 +279,7 @@ test("person lines keep rough words without coordinates", () => {
 test("known arrival carries the clock when the track has one", () => {
   assert.equal(
     renderProactive({ kind: "KNOWN_ARRIVED", personId: "p1", name: "Ravi", clock: 2 }).text,
-    "Ravi ਆ ਗਿਆ, 2 o'clock"
+    "Ravi ਆ ਗਿਆ, 2 vje"
   );
   assert.equal(
     renderProactive({ kind: "KNOWN_ARRIVED", personId: "p1", name: "Ravi", clock: 2 }, "en").text,
@@ -287,13 +288,13 @@ test("known arrival carries the clock when the track has one", () => {
 });
 
 test("kaun hai prefers track clocks and tolerates missing positions", () => {
-  assert.equal(summarizePeople([{ name: "Ravi", clock: 2, distance: "near" }]), "Ravi 2 o'clock");
+  assert.equal(summarizePeople([{ name: "Ravi", clock: 2, distance: "near" }]), "Ravi 2 vje");
   assert.equal(
     summarizePeople([
       { name: "Ravi", clock: 2, distance: "near" },
       { gender: "woman", clock: 10, distance: "far" },
     ]),
-    "Do log: Ravi 2 o'clock, ik aurat 10 o'clock"
+    "Do log: Ravi 2 vje, ik aurat 10 vje"
   );
   // A bad clock falls back to the rough words instead of crashing.
   assert.equal(
@@ -323,7 +324,7 @@ test("enrollment and forget phrases", () => {
 test("find locate rendering: clock + nearness, maybe, miss", () => {
   assert.equal(
     renderFindLocated("Kainchi", { x: 0.9, distance: "near", confidence: 0.9 }, 100),
-    "Kainchi, 1 o'clock, nede"
+    "Kainchi, 1 vje, nede"
   );
   assert.equal(
     renderFindLocated("Kainchi", { x: 0.1, distance: "far", confidence: 0.8 }, 100, "en"),
@@ -331,7 +332,7 @@ test("find locate rendering: clock + nearness, maybe, miss", () => {
   );
   assert.equal(
     renderFindLocated("Kainchi", { x: 0.9, distance: "near", confidence: 0.5 }, 100),
-    "Shayad Kainchi, 1 o'clock"
+    "Shayad Kainchi, 1 vje"
   );
   assert.equal(
     renderFindLocated("Kainchi", { x: 0.9, distance: "near", confidence: 0.2 }, 100, "en"),
@@ -351,11 +352,11 @@ test("read-more tail", () => {
 test("kaun hai answers use clocks when available", () => {
   assert.equal(
     summarizePeople([{ name: "Ravi", position: "left", distance: "near", x: 0.9 }], "pa", 100),
-    "Ravi 1 o'clock"
+    "Ravi 1 vje"
   );
   assert.equal(
     summarizePeople([{ position: "centre", distance: "far", gender: "woman", x: 0.1 }], "pa", 100),
-    "Ik aurat, 11 o'clock"
+    "Ik aurat, 11 vje"
   );
   assert.equal(
     summarizePeople([{ name: "Ravi", position: "left", distance: "near" }]),

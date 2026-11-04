@@ -39,11 +39,11 @@ test("distanceWord in all languages", () => {
 test("renderPositions replaces placeholders with clock words", () => {
   assert.equal(
     renderPositions("Ik banda {pos:0}", [{ x: 0, y: 0.5 }], 100, "pa"),
-    "Ik banda 10 o'clock"
+    "Ik banda 10 vje"
   );
   assert.equal(
     renderPositions("Kainchi {pos:0}", [{ x: 1, y: 0.9, distance: "near" }], 100, "pa"),
-    "Kainchi 2 o'clock, kol"
+    "Kainchi 2 vje, kol"
   );
   assert.equal(
     renderPositions("{pos:0} and {pos:1}", [{ x: 0.5, y: 0.5 }, { x: 0, y: 0.5 }], 66, "en"),

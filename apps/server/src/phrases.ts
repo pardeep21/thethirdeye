@@ -118,10 +118,11 @@ function sceneItemText(item: ScenePhraseItem, lang: SpeakLang): string {
             ? "aadmi"
             : "banda";
     if (lang === "en") return `a ${who} ${clock}`;
-    if (lang === "hi") return `ek ${who} ${clock}`;
-    return `ik ${who} ${clock}`;
+    if (lang === "hi") return `${clock} ek ${who} hai`;
+    return `${clock} ik ${who} hai`;
   }
-  return `${item.label} ${clock}`;
+  if (lang === "en") return `${item.label} ${clock}`;
+  return `${item.label} hai ${clock}`;
 }
 
 export function renderProactive(
@@ -157,12 +158,15 @@ export function renderProactive(
         if (lang === "hi") return { text: "Kuch khaas nahi", lang };
         return { text: "Kujh khaas nahi", lang };
       }
-      const head = lang === "en" ? "In front" : "Saamne";
-      return { text: `${head}: ${event.items.map((i) => sceneItemText(i, lang)).join(", ")}`, lang };
+      const items = event.items.map((i) => sceneItemText(i, lang)).join(", ");
+      if (lang === "en") return { text: `In front: ${items}`, lang };
+      return { text: `Saamne ${items}`, lang };
     }
     case "SCENE_UPDATE": {
       const head = lang === "en" ? "Also" : lang === "hi" ? "Aur" : "Hor";
-      return { text: `${head}: ${event.items.map((i) => sceneItemText(i, lang)).join(", ")}`, lang };
+      const items = event.items.map((i) => sceneItemText(i, lang)).join(", ");
+      if (lang === "en") return { text: `Also: ${items}`, lang };
+      return { text: `${head} ${items}`, lang };
     }
   }
 }
