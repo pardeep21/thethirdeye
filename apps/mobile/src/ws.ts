@@ -156,6 +156,10 @@ export class EyeWs {
     });
   }
 
+  sendCaptureFailed(reqId: string, reason: string): void {
+    this.sendJson({ type: "capture_failed", reqId, reason });
+  }
+
   sendAudio(audioBase64: string, encoding: "pcm16" | "m4a", sampleRate: number): void {
     this.sendJson({ type: "audio", audioBase64, encoding, sampleRate, ts: Date.now() });
   }

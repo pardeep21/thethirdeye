@@ -545,7 +545,9 @@ test("agent throw speaks the unsure fallback", async () => {
   try {
     const ws = await openClient(t.port);
     try {
-      sendUtterance(ws, "ki hai saamne");
+      // Chat so the agent runs and throws (vision without an image
+      // answers no-camera before the model is reached).
+      sendUtterance(ws, "ki haal hai");
       const got = await collectUntil(ws, (m) => m.type === "speak", 2000);
       assert.deepEqual(got.find((m) => m.type === "speak"), {
         type: "speak",
@@ -574,7 +576,7 @@ test("agent timeout speaks the timeout line", async () => {
   try {
     const ws = await openClient(t.port);
     try {
-      const turn = await runSilentAgentTurn(ws, "ki hai saamne");
+      const turn = await runSilentAgentTurn(ws, "ki haal hai");
       const answers = turn.filter((m) => m.type === "speak" && m.kind === "answer");
       assert.equal(answers.length, 1);
       assert.equal(answers[0]?.text, "Pakka nahi, dobara puchho");
@@ -596,7 +598,8 @@ test("capture miss with no lastFrame still speaks", async () => {
     const ws = await openClient(t.port);
     try {
       // No frame ever sent: capture_now times out and no lastFrame exists.
-      sendUtterance(ws, "ki hai saamne");
+      // Chat goes to the agent without an image; vision answers no-camera.
+      sendUtterance(ws, "ki haal hai");
       const got = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "answer", 2000);
       assert.equal(
         got.find((m) => m.type === "speak" && m.kind === "answer")?.text,
@@ -660,9 +663,10 @@ test("barge-in: late A stays silent, only B speaks", async () => {
   try {
     const ws = await openClient(t.port);
     try {
-      sendUtterance(ws, "pehla saval ki hai");
+      // Chat (non-vision) so both turns reach the model without an image.
+      sendUtterance(ws, "pehla saval sunao");
       await testDelay(80); // A is in its model call when B arrives
-      sendUtterance(ws, "dooja saval ki hai");
+      sendUtterance(ws, "dooja saval sunao");
       const got = await collectFor(ws, 1200);
       const answers = got.filter((m) => m.type === "speak" && m.kind === "answer");
       assert.ok(
@@ -689,7 +693,7 @@ test("/stats shows silentTurnsRescued", async () => {
   try {
     const ws = await openClient(t.port);
     try {
-      sendUtterance(ws, "ki hai saamne");
+      sendUtterance(ws, "ki haal hai");
       const got = await collectUntil(ws, (m) => m.type === "speak" && m.kind === "answer", 2000);
       assert.equal(got.find((m) => m.type === "speak" && m.kind === "answer")?.text, "pakka nahi, dobara bolo");
       const res = await fetch(`http://127.0.0.1:${t.port}/stats`);

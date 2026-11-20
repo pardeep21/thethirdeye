@@ -3,7 +3,7 @@
 // switch + settle + restore lives in App.tsx.
 import type { LensId } from "../../server/src/protocol";
 
-/** Zoom settle before the one-shot capture (server waits 800 ms). */
+/** Zoom settle before the one-shot capture (server waits 2500 ms). */
 export const LENS_SETTLE_MS = 300;
 
 export interface CaptureLens {

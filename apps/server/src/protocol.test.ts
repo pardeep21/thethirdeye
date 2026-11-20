@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   isAudioMessage,
+  isCaptureFailedMessage,
   isCaptureNowMessage,
   isCommandMessage,
   isEarconMessage,
@@ -136,3 +137,12 @@ test("earcon/capture_now/state guards", () => {
     false
   );
 });
+
+test("capture_failed guard", () => {
+  assert.equal(isCaptureFailedMessage({ type: "capture_failed", reqId: "r1", reason: "take-photo-failed" }), true);
+  assert.equal(isCaptureFailedMessage({ type: "capture_failed", reqId: "r1" }), false);
+  assert.equal(isCaptureFailedMessage({ type: "capture_failed", reqId: 7, reason: "x" }), false);
+  assert.equal(isCaptureFailedMessage({ type: "frame", reqId: "r1", reason: "x" }), false);
+  assert.equal(isCaptureFailedMessage(null), false);
+});
+

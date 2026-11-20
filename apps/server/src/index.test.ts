@@ -929,8 +929,9 @@ test("capture_now timeout falls back to the last frame, then to no image", async
   try {
     const ws = await openClient(t.port);
     try {
-      // No frame yet: the agent goes without an image.
-      sendUtterance(ws, "ki hai saamne");
+      // No frame yet: chat (non-vision) still goes without an image.
+      // Vision without an image answers no-camera (see R2 tests below).
+      sendUtterance(ws, "ki haal hai");
       await collectUntil(ws, (m) => m.type === "speak" && m.kind === "answer", 2000);
       assert.equal(agent.inputs.length, 1);
       assert.equal(agent.inputs[0]?.image, undefined);
@@ -961,7 +962,9 @@ test("agent failure speaks the unsure fallback plus earcon:error", async () => {
   try {
     const ws = await openClient(t.port);
     try {
-      sendUtterance(ws, "ki hai saamne");
+      // Chat (non-vision) so the agent runs and throws; vision without an
+      // image would answer no-camera before the model is reached.
+      sendUtterance(ws, "ki haal hai");
       const got = await collectUntil(ws, (m) => m.type === "speak", 2000);
       assert.deepEqual(
         got.find((m) => m.type === "speak"),
@@ -1511,6 +1514,105 @@ test("timeout: slow agent find action speaks the line once, skips say", async ()
     }
   } finally {
     delete process.env.FIND_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+// ---- R2: reliable capture for questions ----
+
+test("R2: capture arriving at 1200 ms is used (default 2500 ms window)", async () => {
+  delete process.env.CAPTURE_TIMEOUT_MS; // exercise the default
+  const agent = new MockAgentBrain();
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "ki hai saamne");
+      const early = await collectUntil(ws, (m) => m.type === "capture_now", 3000);
+      const capture = early.find((m) => m.type === "capture_now") as { reqId: string };
+      assert.ok(capture?.reqId, `expected capture_now, got: ${JSON.stringify(early)}`);
+      await testDelay(1200); // past the old 800 ms window
+      sendFrame(ws, { reqId: capture.reqId, lens: "main", hfovDeg: 66 });
+      const late = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 3000);
+      const answer = late.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(answer?.text, "Mock saamne: counter te samaan 12 vje");
+      assert.equal(agent.inputs.length, 1);
+      assert.ok(agent.inputs[0]?.image, "the 1200 ms capture must be used");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("R2: capture_failed answers no-camera and never calls the model", async () => {
+  process.env.CAPTURE_TIMEOUT_MS = "2500";
+  const agent = new MockAgentBrain();
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "ki hai saamne");
+      const early = await collectUntil(ws, (m) => m.type === "capture_now", 3000);
+      const capture = early.find((m) => m.type === "capture_now") as { reqId: string };
+      assert.ok(capture?.reqId, `expected capture_now, got: ${JSON.stringify(early)}`);
+      ws.send(JSON.stringify({ type: "capture_failed", reqId: capture.reqId, reason: "take-photo-failed" }));
+      const late = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 3000);
+      const answer = late.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(answer?.text, "camera ton tasveer nahi aayi, dobara puchho");
+      assert.equal(agent.inputs.length, 0, "the model must never be called");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.CAPTURE_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+test("R2: stale 3 s lastFrame + describe answers no-camera", async () => {
+  process.env.CAPTURE_TIMEOUT_MS = "50";
+  const agent = new MockAgentBrain();
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendFrame(ws);
+      await collectUntil(ws, (m) => m.type === "speak" && m.kind === "cash", 2000);
+      await testDelay(3100); // lastFrame now 3 s old: stale (>1500 ms) yet <5 s
+      sendUtterance(ws, "ki hai saamne");
+      const late = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 3000);
+      const answer = late.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(answer?.text, "camera ton tasveer nahi aayi, dobara puchho");
+      assert.equal(agent.inputs.length, 0, "the model must never be called");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.CAPTURE_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+test("R2: chat without any image still reaches the agent", async () => {
+  process.env.CAPTURE_TIMEOUT_MS = "50";
+  const agent = new MockAgentBrain();
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "ki haal hai");
+      const late = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 3000);
+      const answer = late.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(answer?.text, "Mock saamne: counter te samaan 12 vje");
+      assert.equal(agent.inputs.length, 1);
+      assert.equal(agent.inputs[0]?.image, undefined);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.CAPTURE_TIMEOUT_MS;
     await t.done();
   }
 });

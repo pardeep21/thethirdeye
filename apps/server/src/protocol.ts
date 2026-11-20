@@ -122,6 +122,13 @@ export interface CaptureNowMessage {
   lens?: LensId;
 }
 
+/** Phone -> server: the capture_now photo failed (takePhoto null/throws, retried once). */
+export interface CaptureFailedMessage {
+  type: "capture_failed";
+  reqId: string;
+  reason: string;
+}
+
 /** Server -> phone: mode/state snapshot for the home screen. */
 export interface StateMessage {
   type: "state";
@@ -141,7 +148,8 @@ export type UpMessage =
   | HelloMessage
   | UtteranceMessage
   | ListeningMessage
-  | ModeMessage;
+  | ModeMessage
+  | CaptureFailedMessage;
 export type DownMessage = SpeakMessage | EarconMessage | CaptureNowMessage | StateMessage;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -246,6 +254,11 @@ export function isCaptureNowMessage(v: unknown): v is CaptureNowMessage {
     typeof v.reqId === "string" &&
     (v.lens === undefined || v.lens === "main" || v.lens === "ultrawide")
   );
+}
+
+export function isCaptureFailedMessage(v: unknown): v is CaptureFailedMessage {
+  if (!isRecord(v) || v.type !== "capture_failed") return false;
+  return typeof v.reqId === "string" && typeof v.reason === "string";
 }
 
 export function isStateMessage(v: unknown): v is StateMessage {

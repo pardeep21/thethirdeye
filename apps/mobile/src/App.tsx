@@ -27,6 +27,7 @@ import { LENS_SETTLE_MS, resolveCaptureLens } from "./cameraLens";
 import { EyeWs } from "./ws";
 import { SpeakQueue } from "./speech";
 import { captureSmall } from "./capture";
+import { CaptureLock } from "./captureLock";
 import { httpJson, wsToHttp } from "./http";
 import { usePushToTalk, type VoiceMode } from "./ptt";
 import { HomeScreen } from "./screens/HomeScreen";
@@ -50,6 +51,10 @@ const GATE_TICK_MS = 500;
 const LOOK_HEARTBEAT_MS = 2000;
 /** Cash-tile tap reuses the howmuch fast path through a text utterance. */
 const CASH_READ_TEXT = "eh kinne da";
+/** Capture_now retry delay after a failed takePhoto (one retry, then capture_failed). */
+const CAPTURE_RETRY_MS = 150;
+/** capture_failed reason when takePhoto returns null or throws (after the retry). */
+const CAPTURE_FAILED_REASON = "take-photo-failed";
 
 export default function App() {
   const mainDevice = useCameraDevice("back");
@@ -57,7 +62,7 @@ export default function App() {
   const cameraRef = useRef<Camera>(null);
   const gateRef = useRef(createGate());
   const lastTickRef = useRef(0);
-  const uploadingRef = useRef(false);
+  const captureLockRef = useRef(new CaptureLock());
   const saidNoNetworkRef = useRef(false);
   const greetedRef = useRef(false);
   const utteranceTsRef = useRef<number | null>(null);
@@ -277,15 +282,21 @@ export default function App() {
   const uploadFrame = useCallback(
     async (reqId?: string) => {
       const ws = wsRef.current;
-      // capture_now requests bypass the gate's in-flight guard: the agent
-      // asked for a fresh frame and waits on this reqId.
-      if (!ws || (reqId === undefined && uploadingRef.current)) return;
-      uploadingRef.current = true;
+      if (!ws) return;
+      // One takePhoto at a time: capture_now jumps ahead of waiting gate
+      // uploads, and a waiting gate is dropped when a capture arrives.
+      const release = await captureLockRef.current.acquire(reqId === undefined ? "gate" : "capture");
+      if (!release) return;
       try {
-        const small = await captureSmall(takePhoto);
+        let small = await captureSmall(takePhoto);
+        if (!small && reqId !== undefined) {
+          await new Promise((r) => setTimeout(r, CAPTURE_RETRY_MS));
+          small = await captureSmall(takePhoto);
+        }
         if (small) {
           const activeLens: LensId =
             lensOverrideRef.current ?? (lookRef.current ? "ultrawide" : "main");
+          console.log(`capture upload start reqId=${reqId ?? "gate"} lens=${activeLens}`);
           ws.sendFrame(small.base64, {
             width: small.width,
             height: small.height,
@@ -293,9 +304,12 @@ export default function App() {
             hfovDeg: hfovRef.current ?? resolveHfov(activeLens),
             ...(reqId !== undefined ? { reqId } : {}),
           });
+        } else if (reqId !== undefined) {
+          console.log(`capture failed reqId=${reqId} reason=${CAPTURE_FAILED_REASON}`);
+          ws.sendCaptureFailed(reqId, CAPTURE_FAILED_REASON);
         }
       } finally {
-        uploadingRef.current = false;
+        release();
       }
     },
     [takePhoto]
@@ -304,8 +318,9 @@ export default function App() {
   uploadFrameRef.current = uploadFrame;
 
   // Agent capture with a one-shot lens: switch zoom, settle, capture,
-  // restore. If the 800 ms server window is missed the server falls back
-  // to its last frame; overlapping captures share the active override.
+  // restore. If the 2500 ms server window is missed the server falls back
+  // to a fresh last frame or answers no-camera; overlapping captures share
+  // the active override.
   const captureForAgent = useCallback(async (reqId: string, requested?: LensId) => {
     const current: LensId =
       lensOverrideRef.current ?? (lookRef.current ? "ultrawide" : "main");

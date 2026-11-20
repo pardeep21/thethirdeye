@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   isAudioMessage,
+  isCaptureFailedMessage,
   isCommandMessage,
   isFrameMessage,
   isHelloMessage,
@@ -82,10 +83,16 @@ export interface ServerOpts {
   answer?: VisionAnswer;
 }
 
-/** How long an utterance waits for its capture_now frame (prompt 02: 800 ms). */
-export const DEFAULT_CAPTURE_TIMEOUT_MS = 800;
+/** How long an utterance waits for its capture_now frame (R2: 2500 ms). */
+export const DEFAULT_CAPTURE_TIMEOUT_MS = 2500;
 /** A stored frame older than this is too stale to show the agent. */
 export const LAST_FRAME_MAX_AGE_MS = 5000;
+/**
+ * Vision answers need a usable image: the capture for this reqId, or a
+ * last frame younger than this (R2). Older than this, describe/read/find
+ * and vision agent turns answer no-camera instead of going blind.
+ */
+export const CAPTURE_FRESH_MS = 1500;
 /** HFOV fallback when a frame carries none (main lens until calibrated). */
 export const DEFAULT_HFOV_DEG = 66;
 /** Tracks older than this leave the scene state (the agent's refs stay fresh). */
@@ -257,7 +264,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     );
     const narrator = new SceneNarrator();
     const tracker = new FaceTracker();
-    const pendingCaptures = new Map<string, (f: SessionFrame) => void>();
+    const pendingCaptures = new Map<string, (f: SessionFrame | "failed") => void>();
     // Connection diagnostics: frames + user turns served, logged on close
     // (reconnects start a fresh session, so this shows wipe frequency).
     let frameCount = 0;
@@ -445,7 +452,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       return renderProactive({ kind: "NOTE_UNSURE" }, session.lang).text;
     }
 
-    function waitForCapture(reqId: string): Promise<SessionFrame | null> {
+    /**
+     * Wait for the capture_now reply: the frame, "failed" when the phone
+     * reports capture_failed for this reqId, or null on timeout.
+     */
+    function waitForCapture(reqId: string): Promise<SessionFrame | "failed" | null> {
       return new Promise((resolve) => {
         const timer = setTimeout(() => {
           pendingCaptures.delete(reqId);
@@ -459,19 +470,28 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       });
     }
 
+    /**
+     * Capture outcome for the utterance log: ok = fresh capture used;
+     * failed = the phone reported capture_failed; late = no capture but a
+     * usable (<1500 ms) last frame filled in; stale_fallback = neither.
+     */
+    type CaptureStatus = "ok" | "late" | "failed" | "stale_fallback";
+
     function logTimings(
       tRx: number,
       tFrame: number,
       tModelStart: number,
       tModelEnd: number,
-      tSpeak: number
+      tSpeak: number,
+      capture: CaptureStatus
     ): void {
       const usage = agent.getLastUsage?.();
       const cost = agent.getLastCostUsd?.();
       console.log(
         `utterance_rx → frame_rx=${tFrame - tRx}ms → model_start=${tModelStart - tFrame}ms → ` +
           `model_end=${tModelEnd - tModelStart}ms → speak_tx=${tSpeak - tModelEnd}ms ` +
-          `total=${tSpeak - tRx}ms tokens=${usage ? `${usage.promptTokens}/${usage.completionTokens}` : "n/a"} ` +
+          `total=${tSpeak - tRx}ms capture=${capture} ` +
+          `tokens=${usage ? `${usage.promptTokens}/${usage.completionTokens}` : "n/a"} ` +
           `cost=${cost === null || cost === undefined ? "n/a" : `$${cost.toFixed(6)}`}`
       );
     }
@@ -482,7 +502,8 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       tFrame: number,
       tModelStart: number,
       text: string,
-      err: unknown
+      err: unknown,
+      capture: CaptureStatus
     ): Promise<void> {
       if (guard.isSuperseded(turnId)) return;
       const timedOut = err instanceof ModelTimeoutError;
@@ -499,7 +520,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       pushState();
       const tEnd = Date.now();
       stats.record({ frameWaitMs: tFrame - tRx, modelMs: tEnd - tModelStart, totalMs: tEnd - tRx });
-      logTimings(tRx, tFrame, tModelStart, tEnd, tEnd);
+      logTimings(tRx, tFrame, tModelStart, tEnd, tEnd, capture);
     }
 
     async function handleUtterance(text: string): Promise<void> {
@@ -624,18 +645,71 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         const reqId = `u${++utterSeq}`;
         // Reads use the sharper main lens even in look-around.
         send(intent.kind === "read" ? { type: "capture_now", reqId, lens: "main" } : { type: "capture_now", reqId });
-        const capture = await waitForCapture(reqId);
+        const waited = await waitForCapture(reqId);
         if (guard.isSuperseded(turnId)) return;
         const tFrame = Date.now();
 
+        // R2: vision questions need a usable image (this capture, or a
+        // last frame younger than 1500 ms). Chat may go without one.
+        const isVision =
+          intent.kind === "describe" ||
+          intent.kind === "read" ||
+          intent.kind === "find" ||
+          intent.kind === "who";
+        const lastAge =
+          session.lastFrame === null ? Infinity : tFrame - session.lastFrame.receivedAt;
+        const freshFallback =
+          session.lastFrame !== null && lastAge < CAPTURE_FRESH_MS ? session.lastFrame : null;
+
         let image: { jpeg: Buffer; hfovDeg: number } | undefined;
         let usedHfov = DEFAULT_HFOV_DEG;
-        if (capture) {
-          image = { jpeg: capture.jpeg, hfovDeg: capture.hfovDeg };
-          usedHfov = capture.hfovDeg;
-        } else if (session.lastFrame && Date.now() - session.lastFrame.receivedAt < LAST_FRAME_MAX_AGE_MS) {
-          image = { jpeg: session.lastFrame.jpeg, hfovDeg: session.lastFrame.hfovDeg };
-          usedHfov = session.lastFrame.hfovDeg;
+        let captureStatus: CaptureStatus;
+        if (waited !== null && waited !== "failed") {
+          image = { jpeg: waited.jpeg, hfovDeg: waited.hfovDeg };
+          usedHfov = waited.hfovDeg;
+          captureStatus = "ok";
+        } else if (waited === "failed") {
+          captureStatus = "failed";
+          const fallback =
+            freshFallback ??
+            (!isVision && session.lastFrame !== null && lastAge < LAST_FRAME_MAX_AGE_MS
+              ? session.lastFrame
+              : null);
+          if (fallback) {
+            image = { jpeg: fallback.jpeg, hfovDeg: fallback.hfovDeg };
+            usedHfov = fallback.hfovDeg;
+          }
+        } else if (freshFallback) {
+          image = { jpeg: freshFallback.jpeg, hfovDeg: freshFallback.hfovDeg };
+          usedHfov = freshFallback.hfovDeg;
+          captureStatus = "late";
+        } else {
+          captureStatus = "stale_fallback";
+          if (!isVision && session.lastFrame !== null && lastAge < LAST_FRAME_MAX_AGE_MS) {
+            image = { jpeg: session.lastFrame.jpeg, hfovDeg: session.lastFrame.hfovDeg };
+            usedHfov = session.lastFrame.hfovDeg;
+          }
+        }
+
+        // A vision turn without a usable image never goes to the model
+        // blind: it answers no-camera and skips the call entirely.
+        if (isVision && !image) {
+          const line = renderNoCamera(session.lang);
+          answerTurn(turnId, line);
+          sendDrained();
+          session.pushTurn({ role: "user", text });
+          session.pushTurn({ role: "assistant", text: line });
+          didPush = true;
+          const tSpeak = Date.now();
+          stats.record({
+            frameWaitMs: tFrame - tRx,
+            modelMs: 0,
+            totalMs: tSpeak - tRx,
+          });
+          logTimings(tRx, tFrame, tFrame, tFrame, tSpeak, captureStatus);
+          session.agentBusy = false;
+          pushState();
+          return;
         }
 
         const tModelStart = Date.now();
@@ -656,7 +730,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             "agent"
           );
         } catch (err) {
-          await failAgentTurn(turnId, tRx, tFrame, tModelStart, text, err);
+          await failAgentTurn(turnId, tRx, tFrame, tModelStart, text, err, captureStatus);
           return;
         }
         if (guard.isSuperseded(turnId)) return;
@@ -702,7 +776,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           modelMs: tModelEnd - tModelStart,
           totalMs: tSpeak - tRx,
         });
-        logTimings(tRx, tFrame, tModelStart, tModelEnd, tSpeak);
+        logTimings(tRx, tFrame, tModelStart, tModelEnd, tSpeak, captureStatus);
         if (!willRescue) {
           session.agentBusy = false;
           pushState();
@@ -740,6 +814,9 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       try {
         const intent = routeIntent(transcript);
         const frame = frames.get();
+        // R2: command vision needs a usable (<1500 ms) frame, same as agent turns.
+        const usableFrame =
+          frame !== null && Date.now() - frame.receivedAt < CAPTURE_FRESH_MS ? frame : null;
         switch (intent.kind) {
           case "mute":
             engine.setMuted(true);
@@ -772,8 +849,8 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             answerTurn(turnId, renderDidntUnderstand(session.lang));
             return;
           case "describe": {
-            if (!frame) {
-              console.log("describe with no frame yet; answering no-camera");
+            if (!usableFrame) {
+              console.log("describe with no usable frame; answering no-camera");
               answerTurn(turnId, renderNoCamera(session.lang));
               return;
             }
@@ -781,7 +858,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             rescueReason = "error";
             rescueLine = () => renderAgentUnsure(session.lang);
             const said = await tryCommandModel("answer", agentTimeoutFromEnv(), () =>
-              answer.describe(frame.jpeg, transcript)
+              answer.describe(usableFrame.jpeg, transcript)
             );
             if (guard.isSuperseded(turnId)) return;
             if (said === null) {
@@ -794,15 +871,15 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             return;
           }
           case "read": {
-            if (!frame) {
-              console.log("read with no frame yet; answering no-camera");
+            if (!usableFrame) {
+              console.log("read with no usable frame; answering no-camera");
               answerTurn(turnId, renderNoCamera(session.lang));
               return;
             }
             engine.cancel();
             rescueReason = "error";
             rescueLine = () => renderAgentUnsure(session.lang);
-            const raw = await tryCommandModel("answer", agentTimeoutFromEnv(), () => answer.read(frame.jpeg));
+            const raw = await tryCommandModel("answer", agentTimeoutFromEnv(), () => answer.read(usableFrame.jpeg));
             if (guard.isSuperseded(turnId)) return;
             if (raw === null) {
               guard.markSpoken(turnId); // timeout line already queued
@@ -823,11 +900,16 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           }
           case "find": {
             engine.cancel();
+            if (!usableFrame) {
+              console.log("find with no usable frame; answering no-camera");
+              answerTurn(turnId, renderNoCamera(session.lang));
+              return;
+            }
             rescueReason = "error";
             rescueLine = () => renderAgentUnsure(session.lang);
-            const boxes = frame
-              ? await tryCommandModel("find", findTimeoutFromEnv(), () => finder.find(frame.jpeg, intent.noun))
-              : [];
+            const boxes = await tryCommandModel("find", findTimeoutFromEnv(), () =>
+              finder.find(usableFrame.jpeg, intent.noun)
+            );
             if (guard.isSuperseded(turnId)) return;
             if (boxes === null) {
               guard.markSpoken(turnId); // timeout line already queued
@@ -959,6 +1041,10 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           triageBusy = false;
         }
         return out;
+      }
+      if (isCaptureFailedMessage(msg)) {
+        pendingCaptures.get(msg.reqId)?.("failed");
+        return [];
       }
       if (isAudioMessage(msg)) {
         try {
