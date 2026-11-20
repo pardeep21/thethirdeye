@@ -27,8 +27,10 @@ import { DecisionEngine, type DecisionEvent } from "./decision.js";
 import { SceneNarrator } from "./narration.js";
 import {
   renderAgentUnsure,
+  renderDidntUnderstand,
   renderFind,
   renderModelTimeout,
+  renderNoCamera,
   renderOkay,
   renderProactive,
   renderReadMore,
@@ -60,6 +62,7 @@ import { checkEnrollFace } from "./faces/quality.js";
 import { FaceTracker } from "./faces/tracker.js";
 import type { MatchedFace, ObjectFinder, VisionAnswer } from "./adapters/index.js";
 import { defaultDbPath, facesEveryNFromEnv, selectEmbedder, shouldRunFaces } from "./faces/index.js";
+import { TurnGuard } from "./turnGuard.js";
 
 export interface ServerHandles {
   port: number;
@@ -308,6 +311,29 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       for (const s of drain()) send(s);
     };
 
+    // TurnGuard: every user turn ends audible. One instance per connection
+    // so a newer turn supersedes an in-flight older one (barge-in).
+    const guard = new TurnGuard();
+    let turnSeq = 0;
+
+    /**
+     * Queue a P1 answer for this turn. Empty/whitespace text counts as
+     * nothing to say (no queue, no mark). Superseded turns stay silent.
+     */
+    function answerTurn(turnId: string, text: string): void {
+      if (!text.trim()) return;
+      if (guard.isSuperseded(turnId)) return;
+      engine.answer(text, session.lang);
+      guard.markSpoken(turnId);
+    }
+
+    /** Intentional ack earcon: counts as heard for mute/unmute/cancel. */
+    function ackTurn(turnId: string): void {
+      if (guard.isSuperseded(turnId)) return;
+      send({ type: "earcon", name: "ack" });
+      guard.markSpoken(turnId);
+    }
+
     /** One /stats count + one log line per model timeout. */
     function noteTimeout(stage: TimeoutStage, timeoutMs: number): void {
       stats.recordTimeout(stage);
@@ -451,18 +477,21 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     }
 
     async function failAgentTurn(
+      turnId: string,
       tRx: number,
       tFrame: number,
       tModelStart: number,
       text: string,
       err: unknown
     ): Promise<void> {
+      if (guard.isSuperseded(turnId)) return;
       const timedOut = err instanceof ModelTimeoutError;
       if (timedOut) noteTimeout(err.stage, err.timeoutMs);
       else console.error("agent failed:", err instanceof Error ? err.message : err);
       send({ type: "earcon", name: "error" });
       const fallback = timedOut ? renderModelTimeout(session.lang) : renderAgentUnsure(session.lang);
       engine.answer(fallback, session.lang);
+      guard.markSpoken(turnId);
       sendDrained();
       session.pushTurn({ role: "user", text });
       session.pushTurn({ role: "assistant", text: fallback });
@@ -474,262 +503,368 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     }
 
     async function handleUtterance(text: string): Promise<void> {
-      console.log(`heard: ${text}`);
-      utterCount++;
-      const tRx = Date.now();
-
-      // Fast path: trivial commands never reach the LLM.
-      const intent = routeIntent(text);
-      if (intent.kind === "mute") {
-        engine.setMuted(true);
-        session.muted = true;
-        pushState();
-        console.log(`utterance fast-path (mute) total=${Date.now() - tRx}ms`);
-        return;
-      }
-      if (intent.kind === "unmute") {
-        engine.setMuted(false);
-        session.muted = false;
-        pushState();
-        console.log(`utterance fast-path (unmute) total=${Date.now() - tRx}ms`);
-        return;
-      }
-      if (intent.kind === "cancel") {
-        engine.cancel();
-        if (session.lookAround) {
-          setLookAround(false);
-          engine.answer(renderOkay(session.lang), session.lang);
-          sendDrained();
-        }
-        console.log(`utterance fast-path (cancel) total=${Date.now() - tRx}ms`);
-        return;
-      }
-      // Fast path: a bare yes/no answers a pending consent/confirm
-      // question directly. The agent path is too slow and flaky for a
-      // one-word answer (timeouts, truncated JSON), and the stored
-      // pending name cannot mismatch the way a model echo can.
-      const confirm = matchConfirm(text);
-      if (confirm !== null) {
-        const pending = session.pendingAction;
-        if (
-          pending !== null &&
-          (pending.kind === "consent" ||
-            pending.kind === "duplicate-confirm" ||
-            pending.kind === "forget-confirm")
-        ) {
-          engine.cancel();
-          const said = await applyAgentActions(
-            [{ tool: "confirm_consent", name: pending.name, granted: confirm === "yes" }],
-            {
-              session,
-              engine,
-              send,
-              cashCheck: cashRead,
-              narrator,
-              people: { store: people, tracker, faces: adapters.faces },
-              utterance: text,
-              find: { finder },
-              onTimeout: (stage, ms) => noteTimeout(stage, ms),
-            }
-          );
-          // State first: a mutation bumps peopleRev, so the phone
-          // refetches the people count while the answer speaks.
-          pushState();
-          sendDrained();
-          session.pushTurn({ role: "user", text });
-          session.pushTurn({ role: "assistant", text: said ?? "" });
-          console.log(`utterance fast-path (confirm) total=${Date.now() - tRx}ms`);
-          return;
-        }
-      }
-      if (intent.kind === "howmuch") {
-        engine.cancel();
-        engine.answer(await cashRead(), session.lang);
-        sendDrained();
-        console.log(`utterance fast-path (howmuch) total=${Date.now() - tRx}ms`);
-        return;
-      }
-      // Bare "hor" continues a fresh label read; "hor ki hai?" pages
-      // the scene when look-around has one; otherwise the agent answers
-      // from a fresh frame like any other question.
-      if (intent.kind === "more") {
-        const cont = readContinuation(text);
-        if (cont) {
-          engine.cancel();
-          engine.answer(cont, session.lang);
-          sendDrained();
-          console.log(`utterance fast-path (read-more) total=${Date.now() - tRx}ms`);
-          return;
-        }
-        if (session.lookAround && narrator.hasScene()) {
-          engine.cancel();
-          engine.answer(answerMoreText(), session.lang);
-          sendDrained();
-          console.log(`utterance fast-path (more) total=${Date.now() - tRx}ms`);
-          return;
-        }
-      }
-
-      // Agent path: fresh frame, then one model call with memory + scene.
-      session.agentBusy = true;
-      pushState();
-      send({ type: "earcon", name: "thinking" });
-      const reqId = `u${++utterSeq}`;
-      // Reads use the sharper main lens even in look-around.
-      send(intent.kind === "read" ? { type: "capture_now", reqId, lens: "main" } : { type: "capture_now", reqId });
-      const capture = await waitForCapture(reqId);
-      const tFrame = Date.now();
-
-      let image: { jpeg: Buffer; hfovDeg: number } | undefined;
-      let usedHfov = DEFAULT_HFOV_DEG;
-      if (capture) {
-        image = { jpeg: capture.jpeg, hfovDeg: capture.hfovDeg };
-        usedHfov = capture.hfovDeg;
-      } else if (session.lastFrame && Date.now() - session.lastFrame.receivedAt < LAST_FRAME_MAX_AGE_MS) {
-        image = { jpeg: session.lastFrame.jpeg, hfovDeg: session.lastFrame.hfovDeg };
-        usedHfov = session.lastFrame.hfovDeg;
-      }
-
-      const tModelStart = Date.now();
-      let output: AgentOutput;
+      const turnId = `t${++turnSeq}`;
+      guard.begin(turnId);
+      let rescueReason = "silent";
+      let didBusy = false;
+      let didPush = false;
       try {
-        // A late respond resolves into the void: the race already settled,
-        // so it is discarded and can never double-speak.
-        output = await withTimeout(
-          agent.respond({
-            history: [...session.history],
-            utterance: text,
-            image,
-            scene: session.sceneState,
-            lang: session.lang,
-            script: session.script,
-          }),
-          agentTimeoutFromEnv(),
-          "agent"
-        );
-      } catch (err) {
-        await failAgentTurn(tRx, tFrame, tModelStart, text, err);
-        return;
-      }
-      const tModelEnd = Date.now();
+        console.log(`heard: ${text}`);
+        utterCount++;
+        const tRx = Date.now();
 
-      const peopleSaid = await applyAgentActions(output.actions, {
-        session,
-        engine,
-        send,
-        cashCheck: cashRead,
-        narrator,
-        people: { store: people, tracker, faces: adapters.faces },
-        utterance: text,
-        find: { finder, frame: image },
-        onTimeout: (stage, ms) => noteTimeout(stage, ms),
-      });
-      // A label read: the model spoke chunk 0, "hor" pages from chunk 1.
-      if (output.readText !== undefined && output.readText.trim()) {
-        session.lastRead = { text: output.readText.trim(), page: 1, ts: Date.now() };
-      }
-      const rendered =
-        output.say === null ? null : renderPositions(output.say, output.positions, usedHfov, session.lang);
-      // People tools speak their own deterministic line; the model's say
-      // would double-speak the consent question, so it is skipped then.
-      if (!peopleSaid && rendered) engine.answer(rendered, session.lang);
-      sendDrained();
-      session.pushTurn({ role: "user", text });
-      session.pushTurn({ role: "assistant", text: peopleSaid ?? rendered ?? "" });
-      session.agentBusy = false;
-      pushState();
-      const tSpeak = Date.now();
-      stats.record({
-        frameWaitMs: tFrame - tRx,
-        modelMs: tModelEnd - tModelStart,
-        totalMs: tSpeak - tRx,
-      });
-      logTimings(tRx, tFrame, tModelStart, tModelEnd, tSpeak);
-    }
-
-    async function handleCommand(transcript: string): Promise<void> {
-      const intent = routeIntent(transcript);
-      const frame = frames.get();
-      switch (intent.kind) {
-        case "mute":
+        // Fast path: trivial commands never reach the LLM.
+        const intent = routeIntent(text);
+        if (intent.kind === "mute") {
           engine.setMuted(true);
           session.muted = true;
+          pushState();
+          ackTurn(turnId);
+          console.log(`utterance fast-path (mute) total=${Date.now() - tRx}ms`);
           return;
-        case "unmute":
+        }
+        if (intent.kind === "unmute") {
           engine.setMuted(false);
           session.muted = false;
+          pushState();
+          ackTurn(turnId);
+          console.log(`utterance fast-path (unmute) total=${Date.now() - tRx}ms`);
           return;
-        case "cancel":
+        }
+        if (intent.kind === "cancel") {
           engine.cancel();
           if (session.lookAround) {
             setLookAround(false);
-            engine.answer(renderOkay(session.lang), session.lang);
+            ackTurn(turnId);
+            answerTurn(turnId, renderOkay(session.lang));
+            sendDrained();
+          } else {
+            ackTurn(turnId);
           }
-          return;
-        case "more": {
-          engine.cancel();
-          engine.answer(readContinuation(transcript) ?? answerMoreText(), session.lang);
+          console.log(`utterance fast-path (cancel) total=${Date.now() - tRx}ms`);
           return;
         }
-        case "unknown":
-          console.log(`ignoring unparseable command: ${transcript}`);
-          return;
-        case "describe": {
-          if (!frame) {
-            console.log("describe with no frame yet; staying silent");
+        // Fast path: a bare yes/no answers a pending consent/confirm
+        // question directly. The agent path is too slow and flaky for a
+        // one-word answer (timeouts, truncated JSON), and the stored
+        // pending name cannot mismatch the way a model echo can.
+        const confirm = matchConfirm(text);
+        if (confirm !== null) {
+          const pending = session.pendingAction;
+          if (
+            pending !== null &&
+            (pending.kind === "consent" ||
+              pending.kind === "duplicate-confirm" ||
+              pending.kind === "forget-confirm")
+          ) {
+            engine.cancel();
+            const said = await applyAgentActions(
+              [{ tool: "confirm_consent", name: pending.name, granted: confirm === "yes" }],
+              {
+                session,
+                engine,
+                send,
+                cashCheck: cashRead,
+                narrator,
+                people: { store: people, tracker, faces: adapters.faces },
+                utterance: text,
+                find: { finder },
+                onTimeout: (stage, ms) => noteTimeout(stage, ms),
+                onSpoke: () => guard.markSpoken(turnId),
+                isCancelled: () => guard.isSuperseded(turnId),
+              }
+            );
+            if (guard.isSuperseded(turnId)) return;
+            // State first: a mutation bumps peopleRev, so the phone
+            // refetches the people count while the answer speaks.
+            pushState();
+            sendDrained();
+            session.pushTurn({ role: "user", text });
+            session.pushTurn({ role: "assistant", text: said ?? "" });
+            didPush = true;
+            console.log(`utterance fast-path (confirm) total=${Date.now() - tRx}ms`);
             return;
           }
+        }
+        if (intent.kind === "howmuch") {
           engine.cancel();
-          const said = await tryCommandModel("answer", agentTimeoutFromEnv(), () =>
-            answer.describe(frame.jpeg, transcript)
-          );
-          if (said === null) return;
-          engine.answer(said, session.lang);
+          const line = await cashRead();
+          if (guard.isSuperseded(turnId)) return;
+          answerTurn(turnId, line);
+          sendDrained();
+          console.log(`utterance fast-path (howmuch) total=${Date.now() - tRx}ms`);
           return;
         }
-        case "read": {
-          if (!frame) {
-            console.log("read with no frame yet; staying silent");
+        // Bare "hor" continues a fresh label read; "hor ki hai?" pages
+        // the scene when look-around has one; otherwise the agent answers
+        // from a fresh frame like any other question.
+        if (intent.kind === "more") {
+          const cont = readContinuation(text);
+          if (cont) {
+            engine.cancel();
+            answerTurn(turnId, cont);
+            sendDrained();
+            console.log(`utterance fast-path (read-more) total=${Date.now() - tRx}ms`);
             return;
           }
-          engine.cancel();
-          const raw = await tryCommandModel("answer", agentTimeoutFromEnv(), () => answer.read(frame.jpeg));
-          if (raw === null) return;
-          const full = raw.trim();
-          const first = readChunk(full, 0);
-          if (!first) {
-            engine.answer(renderAgentUnsure(session.lang), session.lang);
+          if (session.lookAround && narrator.hasScene()) {
+            engine.cancel();
+            answerTurn(turnId, answerMoreText());
+            sendDrained();
+            console.log(`utterance fast-path (more) total=${Date.now() - tRx}ms`);
             return;
           }
-          session.lastRead = { text: full, page: 1, ts: Date.now() };
-          engine.answer(
-            first.hasMore ? `${first.chunk} ${renderReadMore(session.lang)}` : first.chunk,
-            session.lang
+        }
+
+        // Agent path: fresh frame, then one model call with memory + scene.
+        session.agentBusy = true;
+        didBusy = true;
+        pushState();
+        send({ type: "earcon", name: "thinking" });
+        const reqId = `u${++utterSeq}`;
+        // Reads use the sharper main lens even in look-around.
+        send(intent.kind === "read" ? { type: "capture_now", reqId, lens: "main" } : { type: "capture_now", reqId });
+        const capture = await waitForCapture(reqId);
+        if (guard.isSuperseded(turnId)) return;
+        const tFrame = Date.now();
+
+        let image: { jpeg: Buffer; hfovDeg: number } | undefined;
+        let usedHfov = DEFAULT_HFOV_DEG;
+        if (capture) {
+          image = { jpeg: capture.jpeg, hfovDeg: capture.hfovDeg };
+          usedHfov = capture.hfovDeg;
+        } else if (session.lastFrame && Date.now() - session.lastFrame.receivedAt < LAST_FRAME_MAX_AGE_MS) {
+          image = { jpeg: session.lastFrame.jpeg, hfovDeg: session.lastFrame.hfovDeg };
+          usedHfov = session.lastFrame.hfovDeg;
+        }
+
+        const tModelStart = Date.now();
+        let output: AgentOutput;
+        try {
+          // A late respond resolves into the void: the race already settled,
+          // so it is discarded and can never double-speak.
+          output = await withTimeout(
+            agent.respond({
+              history: [...session.history],
+              utterance: text,
+              image,
+              scene: session.sceneState,
+              lang: session.lang,
+              script: session.script,
+            }),
+            agentTimeoutFromEnv(),
+            "agent"
           );
+        } catch (err) {
+          await failAgentTurn(turnId, tRx, tFrame, tModelStart, text, err);
           return;
         }
-        case "find": {
-          engine.cancel();
-          const boxes = frame
-            ? await tryCommandModel("find", findTimeoutFromEnv(), () => finder.find(frame.jpeg, intent.noun))
-            : [];
-          if (boxes === null) return;
-          engine.answer(renderFind(intent.noun, boxes[0] ?? null, session.lang), session.lang);
-          return;
+        if (guard.isSuperseded(turnId)) return;
+        const tModelEnd = Date.now();
+
+        const peopleSaid = await applyAgentActions(output.actions, {
+          session,
+          engine,
+          send,
+          cashCheck: cashRead,
+          narrator,
+          people: { store: people, tracker, faces: adapters.faces },
+          utterance: text,
+          find: { finder, frame: image },
+          onTimeout: (stage, ms) => noteTimeout(stage, ms),
+          onSpoke: () => guard.markSpoken(turnId),
+          isCancelled: () => guard.isSuperseded(turnId),
+        });
+        if (guard.isSuperseded(turnId)) return;
+        // A label read: the model spoke chunk 0, "hor" pages from chunk 1.
+        if (output.readText !== undefined && output.readText.trim()) {
+          session.lastRead = { text: output.readText.trim(), page: 1, ts: Date.now() };
         }
-        case "who": {
-          engine.cancel();
-          engine.answer(
-            summarizePeople(whoParts(), session.lang, session.lastFrame?.hfovDeg),
-            session.lang
-          );
-          return;
+        const rendered =
+          output.say === null ? null : renderPositions(output.say, output.positions, usedHfov, session.lang);
+        // People tools speak their own deterministic line; the model's say
+        // would double-speak the consent question, so it is skipped then.
+        // Empty/whitespace renders count as nothing: the guard rescues below.
+        if (!peopleSaid && rendered?.trim()) answerTurn(turnId, rendered);
+        else if (peopleSaid?.trim()) guard.markSpoken(turnId);
+        else rescueReason = "null-say";
+        sendDrained();
+        const willRescue = !guard.isSpoken(turnId) && !guard.isSuperseded(turnId);
+        session.pushTurn({ role: "user", text });
+        session.pushTurn({
+          role: "assistant",
+          text: willRescue ? renderAgentUnsure(session.lang) : (peopleSaid ?? rendered ?? ""),
+        });
+        didPush = true;
+        const tSpeak = Date.now();
+        stats.record({
+          frameWaitMs: tFrame - tRx,
+          modelMs: tModelEnd - tModelStart,
+          totalMs: tSpeak - tRx,
+        });
+        logTimings(tRx, tFrame, tModelStart, tModelEnd, tSpeak);
+        if (!willRescue) {
+          session.agentBusy = false;
+          pushState();
         }
-        case "howmuch": {
-          engine.cancel();
-          engine.answer(await cashRead(), session.lang);
-          return;
+        // When silent, busy/idle is left to the rescue below so the fallback
+        // speaks before the idle state (tests collect until idle).
+      } catch (err) {
+        console.error("utterance failed:", err instanceof Error ? err.message : err);
+        rescueReason = "error";
+      } finally {
+        guard.finish(turnId, rescueReason, () => {
+          // Generic fallback only: never a stale model answer or cash value.
+          const fallback = renderAgentUnsure(session.lang);
+          engine.answer(fallback, session.lang);
+          sendDrained();
+          stats.recordSilentRescue();
+          if (!didPush) {
+            session.pushTurn({ role: "user", text });
+            session.pushTurn({ role: "assistant", text: fallback });
+          }
+          if (didBusy && session.agentBusy) {
+            session.agentBusy = false;
+            pushState();
+          }
+        });
+      }
+    }
+
+    async function handleCommand(transcript: string): Promise<void> {
+      const turnId = `t${++turnSeq}`;
+      guard.begin(turnId);
+      let rescueReason = "silent";
+      // Reason-specific fallback; the generic unsure never repeats stale output.
+      let rescueLine: (() => string) | null = null;
+      try {
+        const intent = routeIntent(transcript);
+        const frame = frames.get();
+        switch (intent.kind) {
+          case "mute":
+            engine.setMuted(true);
+            session.muted = true;
+            pushState();
+            ackTurn(turnId);
+            return;
+          case "unmute":
+            engine.setMuted(false);
+            session.muted = false;
+            pushState();
+            ackTurn(turnId);
+            return;
+          case "cancel":
+            engine.cancel();
+            if (session.lookAround) {
+              setLookAround(false);
+              answerTurn(turnId, renderOkay(session.lang));
+            }
+            ackTurn(turnId);
+            return;
+          case "more": {
+            engine.cancel();
+            if (guard.isSuperseded(turnId)) return;
+            answerTurn(turnId, readContinuation(transcript) ?? answerMoreText());
+            return;
+          }
+          case "unknown":
+            console.log(`unparseable command, answering: ${transcript}`);
+            answerTurn(turnId, renderDidntUnderstand(session.lang));
+            return;
+          case "describe": {
+            if (!frame) {
+              console.log("describe with no frame yet; answering no-camera");
+              answerTurn(turnId, renderNoCamera(session.lang));
+              return;
+            }
+            engine.cancel();
+            rescueReason = "error";
+            rescueLine = () => renderAgentUnsure(session.lang);
+            const said = await tryCommandModel("answer", agentTimeoutFromEnv(), () =>
+              answer.describe(frame.jpeg, transcript)
+            );
+            if (guard.isSuperseded(turnId)) return;
+            if (said === null) {
+              guard.markSpoken(turnId); // timeout line already queued
+              return;
+            }
+            // Blank model text counts as nothing: the guard rescues below.
+            if (said.trim()) answerTurn(turnId, said);
+            else rescueReason = "empty-model";
+            return;
+          }
+          case "read": {
+            if (!frame) {
+              console.log("read with no frame yet; answering no-camera");
+              answerTurn(turnId, renderNoCamera(session.lang));
+              return;
+            }
+            engine.cancel();
+            rescueReason = "error";
+            rescueLine = () => renderAgentUnsure(session.lang);
+            const raw = await tryCommandModel("answer", agentTimeoutFromEnv(), () => answer.read(frame.jpeg));
+            if (guard.isSuperseded(turnId)) return;
+            if (raw === null) {
+              guard.markSpoken(turnId); // timeout line already queued
+              return;
+            }
+            const full = raw.trim();
+            const first = readChunk(full, 0);
+            if (!first) {
+              answerTurn(turnId, renderAgentUnsure(session.lang));
+              return;
+            }
+            session.lastRead = { text: full, page: 1, ts: Date.now() };
+            answerTurn(
+              turnId,
+              first.hasMore ? `${first.chunk} ${renderReadMore(session.lang)}` : first.chunk
+            );
+            return;
+          }
+          case "find": {
+            engine.cancel();
+            rescueReason = "error";
+            rescueLine = () => renderAgentUnsure(session.lang);
+            const boxes = frame
+              ? await tryCommandModel("find", findTimeoutFromEnv(), () => finder.find(frame.jpeg, intent.noun))
+              : [];
+            if (guard.isSuperseded(turnId)) return;
+            if (boxes === null) {
+              guard.markSpoken(turnId); // timeout line already queued
+              return;
+            }
+            answerTurn(turnId, renderFind(intent.noun, boxes[0] ?? null, session.lang));
+            return;
+          }
+          case "who": {
+            engine.cancel();
+            if (guard.isSuperseded(turnId)) return;
+            answerTurn(
+              turnId,
+              summarizePeople(whoParts(), session.lang, session.lastFrame?.hfovDeg)
+            );
+            return;
+          }
+          case "howmuch": {
+            engine.cancel();
+            rescueReason = "error";
+            rescueLine = () => renderAgentUnsure(session.lang);
+            const line = await cashRead();
+            if (guard.isSuperseded(turnId)) return;
+            answerTurn(turnId, line);
+            return;
+          }
         }
+      } catch (err) {
+        console.error("command failed:", err instanceof Error ? err.message : err);
+        rescueReason = "error";
+        rescueLine = () => renderAgentUnsure(session.lang);
+      } finally {
+        guard.finish(turnId, rescueReason, () => {
+          engine.answer((rescueLine ?? (() => renderAgentUnsure(session.lang)))(), session.lang);
+          stats.recordSilentRescue();
+          // No drain here: the audio branch drains after handleCommand.
+        });
       }
     }
 
@@ -835,7 +970,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           }
         } catch (err) {
           console.error("command failed:", err instanceof Error ? err.message : err);
-          return [];
+          return drain();
         }
         return drain();
       }
@@ -849,6 +984,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           session.muted = false;
           pushState();
         } else engine.cancel();
+        send({ type: "earcon", name: "ack" });
         return [];
       }
       if (isUtteranceMessage(msg)) {

@@ -134,6 +134,7 @@ test("stats snapshot percentiles over samples", () => {
     timeouts: { triage: 0, scene: 0, agent: 0, answer: 0, find: 0 },
     triageSamples: 0,
     triageMs: { p50: 0, p95: 0 },
+    silentTurnsRescued: 0,
   });
   for (let i = 1; i <= 10; i++) {
     st.record({ frameWaitMs: i * 10, modelMs: i * 100, totalMs: i * 1000 });
@@ -164,4 +165,12 @@ test("stats count timeouts per stage", () => {
   st.recordTimeout("agent");
   st.recordTimeout("find");
   assert.deepEqual(st.snapshot().timeouts, { triage: 2, scene: 0, agent: 1, answer: 0, find: 1 });
+});
+
+test("stats count silent-turn rescues", () => {
+  const st = new UtteranceStats();
+  assert.equal(st.snapshot().silentTurnsRescued, 0);
+  st.recordSilentRescue();
+  st.recordSilentRescue();
+  assert.equal(st.snapshot().silentTurnsRescued, 2);
 });

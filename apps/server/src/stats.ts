@@ -29,6 +29,8 @@ export interface StatsSnapshot {
   triageSamples: number;
   /** Proactive perception round-trip time (timeouts excluded). */
   triageMs: StageStats;
+  /** User turns that produced nothing and got the TurnGuard fallback. */
+  silentTurnsRescued: number;
 }
 
 export const STATS_MAX_SAMPLES = 50;
@@ -48,6 +50,7 @@ export class UtteranceStats {
   private samples: UtteranceTiming[] = [];
   private triage: number[] = [];
   private timeouts: TimeoutCounts = { triage: 0, scene: 0, agent: 0, answer: 0, find: 0 };
+  private rescued = 0;
 
   record(t: UtteranceTiming): void {
     this.samples.push(t);
@@ -64,6 +67,11 @@ export class UtteranceStats {
     this.timeouts[stage]++;
   }
 
+  /** One TurnGuard fallback spoken for an otherwise-silent user turn. */
+  recordSilentRescue(): void {
+    this.rescued++;
+  }
+
   get count(): number {
     return this.samples.length;
   }
@@ -77,6 +85,7 @@ export class UtteranceStats {
       timeouts: { ...this.timeouts },
       triageSamples: this.triage.length,
       triageMs: stage(this.triage),
+      silentTurnsRescued: this.rescued,
     };
   }
 }

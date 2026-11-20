@@ -82,6 +82,10 @@ export interface ActionContext {
   find?: FindActions;
   /** Timeout sink for model calls (stats + log); the line is still spoken. */
   onTimeout?: (stage: TimeoutStage, timeoutMs: number) => void;
+  /** Fired whenever an action queues a speak (cash_check, find, people flows). */
+  onSpoke?: () => void;
+  /** Barge-in: when true, speech is skipped (state flips still apply). */
+  isCancelled?: () => boolean;
 }
 
 function norm(name: string): string {
@@ -310,8 +314,10 @@ export async function applyAgentActions(
 ): Promise<string | null> {
   let said: string | null = null;
   const sayPeople = (text: string): void => {
+    if (ctx.isCancelled?.()) return;
     said = text;
     ctx.engine.answer(text, ctx.session.lang);
+    ctx.onSpoke?.();
   };
   for (const a of actions) {
     switch (a.tool) {
@@ -326,9 +332,13 @@ export async function applyAgentActions(
         ctx.session.muted = a.on;
         pushState(ctx);
         break;
-      case "cash_check":
-        ctx.engine.answer(await ctx.cashCheck(), ctx.session.lang);
+      case "cash_check": {
+        const line = await ctx.cashCheck();
+        if (ctx.isCancelled?.()) break;
+        ctx.engine.answer(line, ctx.session.lang);
+        ctx.onSpoke?.();
         break;
+      }
       case "find": {
         const f = ctx.find;
         if (!f) {

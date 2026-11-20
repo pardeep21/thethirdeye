@@ -261,6 +261,19 @@ export function renderModelTimeout(lang: SpeakLang = "pa"): string {
   return "Pakka nahi, dobara puchho";
 }
 
+/** Describe/read asked but no camera frame has arrived yet. Never silent. */
+export function renderNoCamera(lang: SpeakLang = "pa"): string {
+  if (lang === "en") return "no camera image, ask again";
+  if (lang === "hi") return "camera se tasveer nahi aayi, dobara poochho";
+  return "camera ton tasveer nahi aayi, dobara puchho";
+}
+
+/** The command could not be understood. Never silent. */
+export function renderDidntUnderstand(lang: SpeakLang = "pa"): string {
+  if (lang === "en") return "didn't understand, say again";
+  return "samajh nahi aaya, dobara bolo";
+}
+
 /** Voice enrollment: the consent question. Spoken after remember_person. */
 export function renderEnrollAsk(name: string, lang: SpeakLang = "pa"): string {
   if (lang === "en") return `${name}, save? Say yes or no`;
