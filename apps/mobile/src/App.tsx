@@ -25,7 +25,7 @@ import { createGate, shouldSendGate } from "./gate";
 import { resolveHfov, useGateFrameProcessor } from "./camera";
 import { LENS_SETTLE_MS, resolveCaptureLens } from "./cameraLens";
 import { EyeWs } from "./ws";
-import { SpeakQueue } from "./speech";
+import { SpeakQueue, type TtsDiagnostics } from "./speech";
 import { captureSmall } from "./capture";
 import { CaptureLock } from "./captureLock";
 import { httpJson, wsToHttp } from "./http";
@@ -149,6 +149,17 @@ export default function App() {
 
   useEffect(() => {
     const unsub = queue.onSpeakingChange(setSpeaking);
+    return unsub;
+  }, [queue]);
+
+  // TTS: bind the engine on start so the first real line isn't lost while
+  // it initialises, and mirror speech diagnostics for the Settings screen.
+  useEffect(() => {
+    void queue.warmUp();
+  }, [queue]);
+  const [ttsDiagnostics, setTtsDiagnostics] = useState<TtsDiagnostics>(() => queue.getDiagnostics());
+  useEffect(() => {
+    const unsub = queue.onDiagnosticsChange(() => setTtsDiagnostics(queue.getDiagnostics()));
     return unsub;
   }, [queue]);
 
@@ -515,6 +526,7 @@ export default function App() {
         lookAround,
         toggleLookAround,
         cashRead,
+        ttsDiagnostics,
       }}
     >
       <View style={styles.root}>

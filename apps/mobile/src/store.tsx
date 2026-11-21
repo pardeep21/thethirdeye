@@ -6,6 +6,7 @@ import type { SpeakLang, SpokenScript, StateMessage, UtteranceLang } from "../..
 import type { Caption } from "./voice/captions";
 import type { PttState, VoiceMode } from "./ptt";
 import type { RecogLocale } from "./voice/locale";
+import type { TtsDiagnostics } from "./speech";
 
 export type Screen = "home" | "people" | "peopleEnroll" | "settings" | "about";
 
@@ -57,6 +58,8 @@ export interface AppState {
   lookAround: boolean;
   toggleLookAround(): void;
   cashRead(): void;
+  /** TTS watchdog fires + last spoken lines (Settings diagnostics). */
+  ttsDiagnostics: TtsDiagnostics;
 }
 
 export const AppStateContext = createContext<AppState | null>(null);

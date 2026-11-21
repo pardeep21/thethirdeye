@@ -72,6 +72,8 @@ export interface Strings {
   disclaimerTitle: string;
   iUnderstand: string;
   disclaimerSpoken: string;
+  diagnostics: string;
+  ttsWatchdogFires: string;
 }
 
 const PA: Strings = {
@@ -144,6 +146,8 @@ const PA: Strings = {
   iUnderstand: "Main samajh gaya · I understand",
   disclaimerSpoken:
     "TheThirdEye ik aid hai, medical device nahi. Eh galat ho sakda hai. Zaroori rakam duje bande to confirm karao.",
+  diagnostics: "Diagnostics",
+  ttsWatchdogFires: "TTS watchdog fires",
 };
 
 const HI: Strings = {
@@ -216,6 +220,8 @@ const HI: Strings = {
   iUnderstand: "Main samajh gaya · I understand",
   disclaimerSpoken:
     "TheThirdEye ek sahayak hai, medical device nahi. Ye galat ho sakta hai. Zaroori rakam doosre vyakti se confirm karo.",
+  diagnostics: "Diagnostics",
+  ttsWatchdogFires: "TTS watchdog fires",
 };
 
 const EN: Strings = {
@@ -288,6 +294,8 @@ const EN: Strings = {
   iUnderstand: "I understand",
   disclaimerSpoken:
     "TheThirdEye is an aid, not a medical device. It can be wrong. Confirm important amounts with another person.",
+  diagnostics: "Diagnostics",
+  ttsWatchdogFires: "TTS watchdog fires",
 };
 
 export const STRINGS: Record<SpeakLang, Strings> = { pa: PA, hi: HI, en: EN };

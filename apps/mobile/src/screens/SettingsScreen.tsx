@@ -260,6 +260,25 @@ export function SettingsScreen(): React.JSX.Element {
             <Toggle on={app.muted} />
           </Pressable>
         </Section>
+        <Section title={s.diagnostics}>
+          <Text style={styles.note}>
+            {s.ttsWatchdogFires}: {app.ttsDiagnostics.watchdogFires}
+          </Text>
+          {app.ttsDiagnostics.recent.length === 0 ? (
+            <Text style={styles.note}>{s.nothingSaid}</Text>
+          ) : (
+            app.ttsDiagnostics.recent
+              .slice()
+              .reverse()
+              .map((line, i) => (
+                <Text key={`${i}-${line.text}`} style={styles.note}>
+                  {line.text.length > 120 ? `${line.text.slice(0, 120)}…` : line.text} ·{" "}
+                  {(line.durationMs / 1000).toFixed(1)}s
+                  {line.outcome === "done" ? "" : ` (${line.outcome})`}
+                </Text>
+              ))
+          )}
+        </Section>
         <Section title={s.about}>
           <Pressable
             onPress={() => app.setScreen("about")}
