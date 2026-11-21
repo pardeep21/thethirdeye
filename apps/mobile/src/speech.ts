@@ -16,7 +16,7 @@
 // on purpose: the native module cannot load under plain Node, so unit tests
 // inject a fake backend and the real backend is require()d lazily (Metro
 // provides require(); plain Node never reaches it with a fake injected).
-import type { SpeakLang, SpeakMessage } from "../../server/src/protocol";
+import type { SpeakLang, SpeakMessage, SpokenOutcome as ProtocolSpokenOutcome } from "../../server/src/protocol";
 
 /** Subset of the expo-speech API the queue needs. */
 export interface SpeakOptions {
@@ -99,6 +99,20 @@ export interface SpokenLine {
   outcome: SpokenOutcome;
 }
 
+/**
+ * R7 TTS receipt for one speak line: echoed to the server as a spoken
+ * message so the turn log can join phone outcome + TTS-start latency.
+ * Only lines that carry a server turnId produce one (local lines like
+ * the greeting or the offline notice have no turn to join to).
+ */
+export interface SpokenReport {
+  turnId: string;
+  startedAt: number;
+  endedAt: number;
+  /** Protocol outcome: the internal "threw" maps to "error". */
+  outcome: ProtocolSpokenOutcome;
+}
+
 export interface TtsDiagnostics {
   watchdogFires: number;
   recent: SpokenLine[];
@@ -118,6 +132,7 @@ export class SpeakQueue {
   private rate = 1;
   private speakingListeners = new Set<(speaking: boolean) => void>();
   private diagnosticsListeners = new Set<() => void>();
+  private spokenListeners = new Set<(report: SpokenReport) => void>();
   private fires = 0;
   private history: SpokenLine[] = [];
   private warmUpPromise: Promise<void> | null = null;
@@ -166,6 +181,17 @@ export class SpeakQueue {
     };
   }
 
+  /**
+   * Subscribe to per-line TTS receipts (R7). Fires once per finished
+   * utterance that carries a server turnId; local lines never report.
+   */
+  onSpoken(cb: (report: SpokenReport) => void): () => void {
+    this.spokenListeners.add(cb);
+    return () => {
+      this.spokenListeners.delete(cb);
+    };
+  }
+
   private notifySpeaking(): void {
     const active = this.isSpeakingNow();
     for (const cb of this.speakingListeners) cb(active);
@@ -173,6 +199,10 @@ export class SpeakQueue {
 
   private notifyDiagnostics(): void {
     for (const cb of this.diagnosticsListeners) cb();
+  }
+
+  private notifySpoken(report: SpokenReport): void {
+    for (const cb of this.spokenListeners) cb(report);
   }
 
   /**
@@ -294,11 +324,23 @@ export class SpeakQueue {
     return new Promise<void>((resolve) => {
       let settled = false;
       let timer: unknown = null;
+      // TTS-start for the R7 receipt: the engine's onStart when it fires,
+      // else the speak() call time (watchdog/throw paths never see onStart).
+      let ttsStartAt = startedAt;
       const finish = (outcome: SpokenOutcome): void => {
         if (settled) return;
         settled = true;
         if (timer !== null) this.clock.clearTimeout(timer);
-        this.record(msg.text, this.clock.now() - startedAt, outcome);
+        const endedAt = this.clock.now();
+        this.record(msg.text, endedAt - startedAt, outcome);
+        if (msg.turnId !== undefined) {
+          this.notifySpoken({
+            turnId: msg.turnId,
+            startedAt: ttsStartAt,
+            endedAt,
+            outcome: outcome === "threw" ? "error" : outcome,
+          });
+        }
         this.current = null;
         resolve();
       };
@@ -318,7 +360,10 @@ export class SpeakQueue {
         this.backend.speak(msg.text, {
           language: LANG_VOICE[msg.lang],
           rate: this.rate,
-          onStart: () => this.noteFirstOnStart(),
+          onStart: () => {
+            ttsStartAt = this.clock.now();
+            this.noteFirstOnStart();
+          },
           onDone: () => finish("done"),
           onStopped: () => finish("stopped"),
           onError: () => finish("error"),

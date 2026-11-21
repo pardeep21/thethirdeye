@@ -17,10 +17,13 @@ import {
   isModeMessage,
   isPingMessage,
   isSettingsMessage,
+  isSpokenMessage,
   isUtteranceMessage,
   type DownMessage,
+  type SceneTriage,
   type SpeakKind,
   type SpeakMessage,
+  type TriageResult,
 } from "./protocol.js";
 import { LatestFrameStore } from "./store.js";
 import { centreCrop, fitLongestSide, triageImagePxFromEnv, uwCashCropFromEnv } from "./images.js";
@@ -67,6 +70,8 @@ import { FaceTracker } from "./faces/tracker.js";
 import type { MatchedFace, ObjectFinder, VisionAnswer } from "./adapters/index.js";
 import { defaultDbPath, facesEveryNFromEnv, selectEmbedder, shouldRunFaces } from "./faces/index.js";
 import { TurnGuard } from "./turnGuard.js";
+import { TurnLogger, turnLogDirFromEnv, type CaptureOutcome } from "./turnLog.js";
+import type { AttemptOutcome } from "./adapters/fallback.js";
 
 export interface ServerHandles {
   port: number;
@@ -165,10 +170,21 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
   const people = opts?.store ?? new PeopleStore(defaultDbPath());
   const embedder = opts?.embedder ?? (await selectEmbedder());
   const stats = new UtteranceStats();
+  const turnLogger = new TurnLogger({ dir: turnLogDirFromEnv() });
   const adapters = createAdapters(provider, {
     store: people,
     embedder,
-    onModelAttempt: (prov, outcome) => stats.recordAttempt(prov, outcome),
+    onModelAttempt: (prov, outcome, details) => {
+      stats.recordAttempt(prov, outcome, details.stage);
+      if (details.turnId !== undefined) {
+        turnLogger.recordAttempt(details.turnId, {
+          provider: prov,
+          stage: details.stage,
+          ms: details.ms,
+          outcome,
+        });
+      }
+    },
   });
   const facesEveryN = facesEveryNFromEnv();
   const uwCrop = uwCashCropFromEnv();
@@ -184,6 +200,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
   const sessions = new SessionStore();
   let speakSeq = 0;
   let utterSeq = 0;
+  // R7 turn ids are server-unique (spoken receipts join by turnId across
+  // reconnects, so per-connection counters would collide).
+  let turnSeq = 0;
+  const nextTurnId = (): string => `t${++turnSeq}`;
+  let connSeq = 0;
 
   async function handleEnroll(body: unknown): Promise<{ status: number; json: unknown }> {
     const rec = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
@@ -317,6 +338,60 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       });
     };
 
+    const connId = `c${++connSeq}`;
+
+    /**
+     * One traced model call for a turn. Fallback chains record each member
+     * attempt themselves (via onModelAttempt above); single-provider calls
+     * record one outer attempt here, so every model call lands exactly once
+     * in both /stats and the turn record.
+     */
+    async function modelCall<T>(stage: TimeoutStage, turnId: string, fn: () => Promise<T>): Promise<T> {
+      const before = turnLogger.attemptCount(turnId, stage);
+      const start = Date.now();
+      try {
+        const out = await fn();
+        if (turnLogger.attemptCount(turnId, stage) === before) {
+          const ms = Date.now() - start;
+          stats.recordAttempt(provider, "ok", stage);
+          turnLogger.recordAttempt(turnId, { provider, stage, ms, outcome: "ok" });
+        }
+        return out;
+      } catch (err) {
+        if (turnLogger.attemptCount(turnId, stage) === before) {
+          const ms = Date.now() - start;
+          const outcome: AttemptOutcome = err instanceof ModelTimeoutError ? "timeout" : "error";
+          stats.recordAttempt(provider, outcome, stage);
+          turnLogger.recordAttempt(turnId, { provider, stage, ms, outcome });
+        }
+        throw err;
+      }
+    }
+
+    /** Attempt sink for model calls nested in action dispatch (find). */
+    function noteAttempt(
+      turnId: string,
+      stage: TimeoutStage,
+      ms: number,
+      outcome: AttemptOutcome
+    ): void {
+      stats.recordAttempt(provider, outcome, stage);
+      turnLogger.recordAttempt(turnId, { provider, stage, ms, outcome });
+    }
+
+    /** Finish a traced turn: write/flush the log line and feed /stats. */
+    function finishTurnLogging(
+      turnId: string,
+      opts: { rescued: boolean; rescueReason?: string; superseded?: boolean }
+    ): void {
+      const rec = turnLogger.finish(turnId, opts);
+      if (!rec) return;
+      stats.recordTurn({ capture: rec.capture, attempts: rec.attempts, rescued: rec.rescued });
+      // A receipt that beat the finish line: sample its latency now, since
+      // no later onSpoken call will fire for this turn.
+      if (rec.spoken) stats.recordSpoken(rec.spoken.latencyMs, rec.spoken.outcome);
+    }
+
     const drain = (): SpeakMessage[] =>
       engine.takeSpeak().map((a) => ({
         type: "speak",
@@ -325,6 +400,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         lang: a.lang,
         priority: a.priority,
         kind: kindForEvent(a.event),
+        ...(a.turnId !== undefined ? { turnId: a.turnId } : {}),
       }));
 
     const sendDrained = (): void => {
@@ -334,7 +410,6 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     // TurnGuard: every user turn ends audible. One instance per connection
     // so a newer turn supersedes an in-flight older one (barge-in).
     const guard = new TurnGuard();
-    let turnSeq = 0;
 
     /**
      * Queue a P1 answer for this turn. Empty/whitespace text counts as
@@ -343,7 +418,8 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     function answerTurn(turnId: string, text: string): void {
       if (!text.trim()) return;
       if (guard.isSuperseded(turnId)) return;
-      engine.answer(text, session.lang);
+      engine.answer(text, session.lang, undefined, turnId);
+      turnLogger.setText(turnId, text);
       guard.markSpoken(turnId);
     }
 
@@ -367,15 +443,18 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
      */
     async function tryCommandModel<T>(
       stage: TimeoutStage,
+      turnId: string,
       ms: number,
       call: () => Promise<T>
     ): Promise<T | null> {
       try {
-        return await withTimeout(call(), ms, stage);
+        return await modelCall(stage, turnId, () => withTimeout(call(), ms, stage));
       } catch (err) {
         if (!(err instanceof ModelTimeoutError)) throw err;
         noteTimeout(stage, err.timeoutMs);
-        engine.answer(renderModelTimeout(session.lang), session.lang);
+        const line = renderModelTimeout(session.lang);
+        engine.answer(line, session.lang, undefined, turnId);
+        turnLogger.setText(turnId, line);
         session.agentBusy = false;
         pushState();
         return null;
@@ -439,15 +518,14 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     }
 
     /** Fresh cash read; shared by the howmuch fast path and cash_check. */
-    async function cashRead(): Promise<string> {
+    async function cashRead(turnId: string): Promise<string> {
       const frame = frames.get();
       if (!frame) return renderProactive({ kind: "NOTE_UNSURE" }, session.lang).text;
       let fresh;
       try {
-        fresh = await withTimeout(
-          triage.triage(await cashInput(frame.jpeg, frame.lens)),
-          triageTimeoutFromEnv(),
-          "triage"
+        const input = await cashInput(frame.jpeg, frame.lens);
+        fresh = await modelCall("triage", turnId, () =>
+          withTimeout(triage.triage(input, undefined, turnId), triageTimeoutFromEnv(), "triage")
         );
       } catch (err) {
         if (!(err instanceof ModelTimeoutError)) throw err;
@@ -483,21 +561,13 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       });
     }
 
-    /**
-     * Capture outcome for the utterance log: ok = fresh capture used;
-     * failed = the phone reported capture_failed; late = no capture but a
-     * usable (<1500 ms) last frame filled in; stale_fallback = neither;
-     * camera_off = vision short-circuited, no capture requested (R6).
-     */
-    type CaptureStatus = "ok" | "late" | "failed" | "stale_fallback" | "camera_off";
-
     function logTimings(
       tRx: number,
       tFrame: number,
       tModelStart: number,
       tModelEnd: number,
       tSpeak: number,
-      capture: CaptureStatus
+      capture: CaptureOutcome
     ): void {
       const usage = agent.getLastUsage?.();
       const cost = agent.getLastCostUsd?.();
@@ -517,7 +587,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       tModelStart: number,
       text: string,
       err: unknown,
-      capture: CaptureStatus
+      capture: CaptureOutcome
     ): Promise<void> {
       if (guard.isSuperseded(turnId)) return;
       const timedOut = err instanceof ModelTimeoutError;
@@ -525,7 +595,9 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       else console.error("agent failed:", err instanceof Error ? err.message : err);
       send({ type: "earcon", name: "error" });
       const fallback = timedOut ? renderModelTimeout(session.lang) : renderAgentUnsure(session.lang);
-      engine.answer(fallback, session.lang);
+      engine.answer(fallback, session.lang, undefined, turnId);
+      turnLogger.setText(turnId, fallback);
+      turnLogger.setCapture(turnId, capture);
       guard.markSpoken(turnId);
       sendDrained();
       session.pushTurn({ role: "user", text });
@@ -538,8 +610,9 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     }
 
     async function handleUtterance(text: string): Promise<void> {
-      const turnId = `t${++turnSeq}`;
+      const turnId = nextTurnId();
       guard.begin(turnId);
+      turnLogger.begin(turnId, { kind: "utterance", owner: connId });
       let rescueReason = "silent";
       let didBusy = false;
       let didPush = false;
@@ -550,6 +623,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
 
         // Fast path: trivial commands never reach the LLM.
         const intent = routeIntent(text);
+        turnLogger.setIntent(turnId, intent.kind);
         if (intent.kind === "mute") {
           engine.setMuted(true);
           session.muted = true;
@@ -599,14 +673,19 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
                 session,
                 engine,
                 send,
-                cashCheck: cashRead,
+                cashCheck: () => cashRead(turnId),
                 narrator,
                 people: { store: people, tracker, faces: adapters.faces },
                 utterance: text,
                 find: { finder },
                 onTimeout: (stage, ms) => noteTimeout(stage, ms),
-                onSpoke: () => guard.markSpoken(turnId),
+                onSpoke: (line) => {
+                  guard.markSpoken(turnId);
+                  if (line !== undefined) turnLogger.setText(turnId, line);
+                },
                 isCancelled: () => guard.isSuperseded(turnId),
+                turnId,
+                onAttempt: (stage, ms, outcome) => noteAttempt(turnId, stage, ms, outcome),
               }
             );
             if (guard.isSuperseded(turnId)) return;
@@ -623,7 +702,12 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         }
         if (intent.kind === "howmuch") {
           engine.cancel();
-          const line = await cashRead();
+          const frame = frames.get();
+          turnLogger.setCapture(
+            turnId,
+            frame !== null && Date.now() - frame.receivedAt < CAPTURE_FRESH_MS ? "ok" : "stale_fallback"
+          );
+          const line = await cashRead(turnId);
           if (guard.isSuperseded(turnId)) return;
           answerTurn(turnId, line);
           sendDrained();
@@ -663,6 +747,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           session.agentBusy = true;
           didBusy = true;
           pushState();
+          turnLogger.setCapture(turnId, "camera_off");
           const line = renderNoCamera(session.lang);
           answerTurn(turnId, line);
           sendDrained();
@@ -684,7 +769,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         send({ type: "earcon", name: "thinking" });
         const reqId = `u${++utterSeq}`;
         // Reads use the sharper main lens even in look-around.
-        send(intent.kind === "read" ? { type: "capture_now", reqId, lens: "main" } : { type: "capture_now", reqId });
+        send(
+          intent.kind === "read"
+            ? { type: "capture_now", reqId, lens: "main", turnId }
+            : { type: "capture_now", reqId, turnId }
+        );
         const waited = await waitForCapture(reqId);
         if (guard.isSuperseded(turnId)) return;
         const tFrame = Date.now();
@@ -699,7 +788,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
 
         let image: { jpeg: Buffer; hfovDeg: number } | undefined;
         let usedHfov = DEFAULT_HFOV_DEG;
-        let captureStatus: CaptureStatus;
+        let captureStatus: CaptureOutcome;
         if (waited !== null && waited !== "failed") {
           image = { jpeg: waited.jpeg, hfovDeg: waited.hfovDeg };
           usedHfov = waited.hfovDeg;
@@ -730,6 +819,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         // A vision turn without a usable image never goes to the model
         // blind: it answers no-camera and skips the call entirely.
         if (isVision && !image) {
+          turnLogger.setCapture(turnId, captureStatus);
           const line = renderNoCamera(session.lang);
           answerTurn(turnId, line);
           sendDrained();
@@ -749,21 +839,25 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         }
 
         const tModelStart = Date.now();
+        turnLogger.setCapture(turnId, captureStatus);
         let output: AgentOutput;
         try {
           // A late respond resolves into the void: the race already settled,
           // so it is discarded and can never double-speak.
-          output = await withTimeout(
-            agent.respond({
-              history: [...session.history],
-              utterance: text,
-              image,
-              scene: session.sceneState,
-              lang: session.lang,
-              script: session.script,
-            }),
-            agentTimeoutFromEnv(),
-            "agent"
+          output = await modelCall("agent", turnId, () =>
+            withTimeout(
+              agent.respond({
+                history: [...session.history],
+                utterance: text,
+                image,
+                scene: session.sceneState,
+                lang: session.lang,
+                script: session.script,
+                turnId,
+              }),
+              agentTimeoutFromEnv(),
+              "agent"
+            )
           );
         } catch (err) {
           await failAgentTurn(turnId, tRx, tFrame, tModelStart, text, err, captureStatus);
@@ -776,14 +870,19 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           session,
           engine,
           send,
-          cashCheck: cashRead,
+          cashCheck: () => cashRead(turnId),
           narrator,
           people: { store: people, tracker, faces: adapters.faces },
           utterance: text,
           find: { finder, frame: image },
           onTimeout: (stage, ms) => noteTimeout(stage, ms),
-          onSpoke: () => guard.markSpoken(turnId),
+          onSpoke: (line) => {
+            guard.markSpoken(turnId);
+            if (line !== undefined) turnLogger.setText(turnId, line);
+          },
           isCancelled: () => guard.isSuperseded(turnId),
+          turnId,
+          onAttempt: (stage, ms, outcome) => noteAttempt(turnId, stage, ms, outcome),
         });
         if (guard.isSuperseded(turnId)) return;
         // A label read: the model spoke chunk 0, "hor" pages from chunk 1.
@@ -823,10 +922,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         console.error("utterance failed:", err instanceof Error ? err.message : err);
         rescueReason = "error";
       } finally {
-        guard.finish(turnId, rescueReason, () => {
+        const rescued = guard.finish(turnId, rescueReason, () => {
           // Generic fallback only: never a stale model answer or cash value.
           const fallback = renderAgentUnsure(session.lang);
-          engine.answer(fallback, session.lang);
+          engine.answer(fallback, session.lang, undefined, turnId);
+          turnLogger.setText(turnId, fallback);
           sendDrained();
           stats.recordSilentRescue();
           if (!didPush) {
@@ -838,17 +938,24 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             pushState();
           }
         });
+        finishTurnLogging(turnId, {
+          rescued,
+          rescueReason,
+          superseded: guard.isSuperseded(turnId),
+        });
       }
     }
 
     async function handleCommand(transcript: string): Promise<void> {
-      const turnId = `t${++turnSeq}`;
+      const turnId = nextTurnId();
       guard.begin(turnId);
+      turnLogger.begin(turnId, { kind: "command", owner: connId });
       let rescueReason = "silent";
       // Reason-specific fallback; the generic unsure never repeats stale output.
       let rescueLine: (() => string) | null = null;
       try {
         const intent = routeIntent(transcript);
+        turnLogger.setIntent(turnId, intent.kind);
         const frame = frames.get();
         // R2: command vision needs a usable (<1500 ms) frame, same as agent turns.
         const usableFrame =
@@ -885,6 +992,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             answerTurn(turnId, renderDidntUnderstand(session.lang));
             return;
           case "describe": {
+            turnLogger.setCapture(turnId, usableFrame ? "ok" : "stale_fallback");
             if (!usableFrame) {
               console.log("describe with no usable frame; answering no-camera");
               answerTurn(turnId, renderNoCamera(session.lang));
@@ -893,7 +1001,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             engine.cancel();
             rescueReason = "error";
             rescueLine = () => renderAgentUnsure(session.lang);
-            const said = await tryCommandModel("answer", agentTimeoutFromEnv(), () =>
+            const said = await tryCommandModel("answer", turnId, agentTimeoutFromEnv(), () =>
               answer.describe(usableFrame.jpeg, transcript)
             );
             if (guard.isSuperseded(turnId)) return;
@@ -907,6 +1015,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             return;
           }
           case "read": {
+            turnLogger.setCapture(turnId, usableFrame ? "ok" : "stale_fallback");
             if (!usableFrame) {
               console.log("read with no usable frame; answering no-camera");
               answerTurn(turnId, renderNoCamera(session.lang));
@@ -915,7 +1024,9 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             engine.cancel();
             rescueReason = "error";
             rescueLine = () => renderAgentUnsure(session.lang);
-            const raw = await tryCommandModel("answer", agentTimeoutFromEnv(), () => answer.read(usableFrame.jpeg));
+            const raw = await tryCommandModel("answer", turnId, agentTimeoutFromEnv(), () =>
+              answer.read(usableFrame.jpeg)
+            );
             if (guard.isSuperseded(turnId)) return;
             if (raw === null) {
               guard.markSpoken(turnId); // timeout line already queued
@@ -936,6 +1047,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           }
           case "find": {
             engine.cancel();
+            turnLogger.setCapture(turnId, usableFrame ? "ok" : "stale_fallback");
             if (!usableFrame) {
               console.log("find with no usable frame; answering no-camera");
               answerTurn(turnId, renderNoCamera(session.lang));
@@ -943,7 +1055,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             }
             rescueReason = "error";
             rescueLine = () => renderAgentUnsure(session.lang);
-            const boxes = await tryCommandModel("find", findTimeoutFromEnv(), () =>
+            const boxes = await tryCommandModel("find", turnId, findTimeoutFromEnv(), () =>
               finder.find(usableFrame.jpeg, intent.noun)
             );
             if (guard.isSuperseded(turnId)) return;
@@ -967,7 +1079,8 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
             engine.cancel();
             rescueReason = "error";
             rescueLine = () => renderAgentUnsure(session.lang);
-            const line = await cashRead();
+            turnLogger.setCapture(turnId, usableFrame ? "ok" : "stale_fallback");
+            const line = await cashRead(turnId);
             if (guard.isSuperseded(turnId)) return;
             answerTurn(turnId, line);
             return;
@@ -978,10 +1091,17 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         rescueReason = "error";
         rescueLine = () => renderAgentUnsure(session.lang);
       } finally {
-        guard.finish(turnId, rescueReason, () => {
-          engine.answer((rescueLine ?? (() => renderAgentUnsure(session.lang)))(), session.lang);
+        const rescued = guard.finish(turnId, rescueReason, () => {
+          const line = (rescueLine ?? (() => renderAgentUnsure(session.lang)))();
+          engine.answer(line, session.lang, undefined, turnId);
+          turnLogger.setText(turnId, line);
           stats.recordSilentRescue();
           // No drain here: the audio branch drains after handleCommand.
+        });
+        finishTurnLogging(turnId, {
+          rescued,
+          rescueReason,
+          superseded: guard.isSuperseded(turnId),
         });
       }
     }
@@ -993,17 +1113,23 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
      * skip). Always called serially via the backpressure pump above.
      */
     async function processFrame(f: PendingFrame): Promise<SpeakMessage[]> {
+      // Provisional R7 turn: logged only when this frame speaks.
+      const turnId = nextTurnId();
+      turnLogger.begin(turnId, { kind: "proactive", owner: connId });
       try {
         const runFaces = shouldRunFaces(frameNo++, facesEveryN);
         const startedAt = Date.now();
-        const triageCall =
-          session.lookAround
-            ? withTimeout(triage.triageScene(f.jpeg), triageTimeoutFromEnv(), "scene")
-            : withTimeout(
-                triage.triage(await cashInput(f.jpeg, f.lens)),
-                triageTimeoutFromEnv(),
-                "triage"
-              );
+        let triageCall: Promise<TriageResult | SceneTriage>;
+        if (session.lookAround) {
+          triageCall = modelCall("scene", turnId, () =>
+            withTimeout(triage.triageScene(f.jpeg, undefined, turnId), triageTimeoutFromEnv(), "scene")
+          );
+        } else {
+          const input = await cashInput(f.jpeg, f.lens);
+          triageCall = modelCall("triage", turnId, () =>
+            withTimeout(triage.triage(input, undefined, turnId), triageTimeoutFromEnv(), "triage")
+          );
+        }
         const [result, matched] = await Promise.all([
           triageCall,
           runFaces ? adapters.faces.matchDetailed(f.jpeg) : Promise.resolve([] as MatchedFace[]),
@@ -1016,9 +1142,10 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         const tracks = runFaces ? tracker.update(matched, f.hfovDeg, frameMs) : tracker.liveTracks();
         const fresh = tracks.filter((t) => frameMs - t.lastSeen <= SCENE_TRACK_MAX_AGE_MS);
         session.sceneState = sceneFromPerception(result, fresh, session.lookAround, f.hfovDeg);
-        engine.onFrame(result, fresh, frameMs);
-        for (const ev of narrator.onScene(result, f.hfovDeg)) engine.announceScene(ev);
+        engine.onFrame(result, fresh, frameMs, turnId);
+        for (const ev of narrator.onScene(result, f.hfovDeg)) engine.announceScene(ev, undefined, turnId);
       } catch (err) {
+        turnLogger.discard(turnId);
         if (err instanceof ModelTimeoutError) {
           // Proactive timeout: drop silently, never speak stale or fake.
           // (Not recorded in triageMs: a timeout budget is not a sample.)
@@ -1028,7 +1155,16 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         console.error("perception failed:", err instanceof Error ? err.message : err);
         return [];
       }
-      return drain();
+      const drained = drain();
+      const mine = drained.filter((s) => s.turnId === turnId);
+      if (mine.length === 0) {
+        turnLogger.discard(turnId);
+      } else {
+        turnLogger.setIntent(turnId, mine.map((s) => s.kind ?? "proactive").join("+"));
+        turnLogger.setText(turnId, mine[mine.length - 1]!.text);
+        finishTurnLogging(turnId, { rescued: false });
+      }
+      return drained;
     }
 
     async function handleMessage(raw: string): Promise<SpeakMessage[]> {
@@ -1103,6 +1239,17 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
         session.cameraState = msg.state;
         return [];
       }
+      if (isSpokenMessage(msg)) {
+        const res = turnLogger.onSpoken(msg);
+        if (res.status === "attached" && res.latencyMs !== undefined) {
+          stats.recordSpoken(res.latencyMs, msg.outcome);
+        } else if (res.status === "unknown") {
+          // Orphan receipt (flushed turn, old server): no latency sample,
+          // but a watchdog still counts.
+          stats.recordSpoken(null, msg.outcome);
+        }
+        return [];
+      }
       if (isAudioMessage(msg)) {
         try {
           const pcm = Buffer.from(msg.audioBase64, "base64");
@@ -1161,6 +1308,9 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       console.log(
         `client disconnected (session ${session.id} code=${code}): ${frameCount} frames, ${utterCount} utterances`
       );
+      // No more spoken receipts will arrive: write this connection's
+      // pending turns now instead of waiting out the flush timeout.
+      turnLogger.flushOwner(connId);
       // Park by device so a quick reconnect resumes context (R5). Never
       // authed / never said hello => nothing worth keeping.
       if (deviceKey !== null) sessions.keep(deviceKey, session, Date.now());
@@ -1174,6 +1324,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     port: actualPort,
     close: () =>
       new Promise<void>((resolve, reject) => {
+        turnLogger.close();
         wss.close(() =>
           http.close((err) => {
             if (ownStore) {

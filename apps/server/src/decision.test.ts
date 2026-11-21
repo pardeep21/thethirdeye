@@ -357,3 +357,23 @@ test("muted engine drops scene announcements; cancel clears them", () => {
   second.eng.cancel();
   assert.deepEqual(second.eng.takeSpeak(0), []);
 });
+
+test("R7: queued lines carry their turnId into the speak actions", () => {
+  const { eng } = makeEngine();
+  eng.onFrame(note(100, 0.9), [], 0, "p1");
+  eng.answer("jawab", "pa", 0, "t2");
+  eng.announceScene({ kind: "SCENE_SUMMARY", items: [] }, 0, "p3");
+  const speaks = eng.takeSpeak(0);
+  assert.deepEqual(
+    speaks.map((s) => [s.event.kind, s.turnId]),
+    [
+      ["NOTE_SEEN", "p1"],
+      ["COMMAND_ANSWER", "t2"],
+      ["SCENE_SUMMARY", "p3"],
+    ]
+  );
+  // Untagged queues stay untagged (older callers).
+  const plain = makeEngine();
+  plain.eng.answer("jawab", "pa");
+  assert.equal(plain.eng.takeSpeak()[0]?.turnId, undefined);
+});

@@ -341,3 +341,67 @@ test("diagnostics keep only the last 5 lines", async () => {
     ["line2", "line3", "line4", "line5", "line6"]
   );
 });
+
+test("onSpoken reports turnId lines with TTS-start/ended/outcome, skips local lines", async () => {
+  const { queue, backend, clock } = makeQueue();
+  const reports: Array<{ turnId: string; startedAt: number; endedAt: number; outcome: string }> = [];
+  queue.onSpoken((r) => void reports.push(r));
+  queue.enqueue({ ...line("server line"), turnId: "t7" });
+  queue.enqueue(line("local line"));
+  await tick();
+  const t0 = clock.now();
+  await clock.advance(100);
+  backend.speaks[0].opts.onStart?.();
+  const tStart = clock.now();
+  await clock.advance(400);
+  backend.speaks[0].opts.onDone?.();
+  await tick();
+  backend.speaks[1].opts.onDone?.();
+  await tick();
+  assert.equal(reports.length, 1);
+  assert.deepEqual(reports[0], { turnId: "t7", startedAt: tStart, endedAt: tStart + 400, outcome: "done" });
+  assert.ok(tStart > t0, "TTS start comes from onStart, not the speak call");
+});
+
+test("onSpoken maps threw to error and watchdog stays watchdog", async () => {
+  const { queue, backend, clock } = makeQueue();
+  const reports: Array<{ turnId: string; outcome: string }> = [];
+  queue.onSpoken((r) => void reports.push(r));
+  backend.throwNext = true;
+  queue.enqueue({ ...line("crash"), turnId: "t1" });
+  queue.enqueue({ ...line("stuck"), turnId: "t2" });
+  await tick();
+  await tick();
+  assert.deepEqual(
+    reports.map((r) => [r.turnId, r.outcome]),
+    [["t1", "error"]]
+  );
+  // The stuck line's receipt falls back to the speak-call start time.
+  await clock.advance(watchdogTimeoutMs("stuck".length, 1));
+  assert.deepEqual(
+    reports.map((r) => [r.turnId, r.outcome]),
+    [
+      ["t1", "error"],
+      ["t2", "watchdog"],
+    ]
+  );
+  backend.last().opts.onDone?.();
+  await tick();
+});
+
+test("onSpoken unsubscribe stops receipts", async () => {
+  const { queue, backend } = makeQueue();
+  let n = 0;
+  const unsub = queue.onSpoken(() => void n++);
+  queue.enqueue({ ...line("one"), turnId: "t1" });
+  await tick();
+  backend.last().opts.onDone?.();
+  await tick();
+  assert.equal(n, 1);
+  unsub();
+  queue.enqueue({ ...line("two"), turnId: "t2" });
+  await tick();
+  backend.last().opts.onDone?.();
+  await tick();
+  assert.equal(n, 1);
+});

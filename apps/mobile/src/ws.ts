@@ -15,6 +15,7 @@ import {
   type LensId,
   type SpeakLang,
   type SpeakMessage,
+  type SpokenOutcome,
   type SpokenScript,
   type StateMessage,
   type UtteranceLang,
@@ -254,6 +255,11 @@ export class EyeWs {
 
   sendSettings(lang: SpeakLang, script?: SpokenScript): void {
     this.sendJson({ type: "settings", lang, ...(script !== undefined ? { script } : {}) });
+  }
+
+  /** R7 TTS receipt: one speak line finished in the SpeakQueue. */
+  sendSpoken(turnId: string, startedAt: number, endedAt: number, outcome: SpokenOutcome): void {
+    this.sendJson({ type: "spoken", turnId, startedAt, endedAt, outcome });
   }
 
   close(): void {

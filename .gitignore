@@ -12,3 +12,5 @@ docs/
 apps/faces/.venv/
 __pycache__/
 *.pyc
+logs/
+turns-*.jsonl

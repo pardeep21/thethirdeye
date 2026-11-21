@@ -170,6 +170,15 @@ export default function App() {
     return unsub;
   }, [queue]);
 
+  // R7: echo per-line TTS receipts so the server can join phone outcome +
+  // TTS-start latency to the turn. sendJson drops when disconnected.
+  useEffect(() => {
+    const unsub = queue.onSpoken((r) => {
+      wsRef.current?.sendSpoken(r.turnId, r.startedAt, r.endedAt, r.outcome);
+    });
+    return unsub;
+  }, [queue]);
+
   // TTS: bind the engine on start so the first real line isn't lost while
   // it initialises, and mirror speech diagnostics for the Settings screen.
   useEffect(() => {

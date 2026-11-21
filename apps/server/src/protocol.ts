@@ -17,6 +17,8 @@ export interface SpeakMessage {
   id?: string;
   /** V2: what kind of line this is (absent on older servers). */
   kind?: SpeakKind;
+  /** R7: the server turn that produced this line (absent on older servers). */
+  turnId?: string;
 }
 
 /** Phone -> server: one gated camera frame (768px JPEG, base64). */
@@ -120,6 +122,8 @@ export interface CaptureNowMessage {
   type: "capture_now";
   reqId: string;
   lens?: LensId;
+  /** R7: the server turn waiting on this frame (absent on older servers). */
+  turnId?: string;
 }
 
 /** Phone -> server: heartbeat. The server answers every ping with a pong. */
@@ -152,6 +156,22 @@ export interface CameraStateMessage {
   state: CameraState;
 }
 
+/** How one speak line finished on the phone (R7 TTS receipt). */
+export type SpokenOutcome = "done" | "stopped" | "watchdog" | "error";
+
+/**
+ * Phone -> server: one speak line finished in the SpeakQueue. The server
+ * joins it to the turn by turnId for the turn log and /stats latency.
+ * startedAt/endedAt are the phone's Date.now() around the utterance.
+ */
+export interface SpokenMessage {
+  type: "spoken";
+  turnId: string;
+  startedAt: number;
+  endedAt: number;
+  outcome: SpokenOutcome;
+}
+
 /** Server -> phone: mode/state snapshot for the home screen. */
 export interface StateMessage {
   type: "state";
@@ -174,6 +194,7 @@ export type UpMessage =
   | ModeMessage
   | CaptureFailedMessage
   | CameraStateMessage
+  | SpokenMessage
   | PingMessage;
 export type DownMessage =
   | SpeakMessage
@@ -206,7 +227,8 @@ export function isSpeakMessage(v: unknown): v is SpeakMessage {
       v.kind === "answer" ||
       v.kind === "people" ||
       v.kind === "scene" ||
-      v.kind === "system")
+      v.kind === "system") &&
+    isOptString(v.turnId)
   );
 }
 
@@ -282,7 +304,8 @@ export function isCaptureNowMessage(v: unknown): v is CaptureNowMessage {
   if (!isRecord(v) || v.type !== "capture_now") return false;
   return (
     typeof v.reqId === "string" &&
-    (v.lens === undefined || v.lens === "main" || v.lens === "ultrawide")
+    (v.lens === undefined || v.lens === "main" || v.lens === "ultrawide") &&
+    isOptString(v.turnId)
   );
 }
 
@@ -304,6 +327,16 @@ export function isStateMessage(v: unknown): v is StateMessage {
     typeof v.agentBusy === "boolean" &&
     typeof v.lang === "string" &&
     typeof v.peopleRev === "number"
+  );
+}
+
+export function isSpokenMessage(v: unknown): v is SpokenMessage {
+  if (!isRecord(v) || v.type !== "spoken") return false;
+  return (
+    typeof v.turnId === "string" &&
+    typeof v.startedAt === "number" &&
+    typeof v.endedAt === "number" &&
+    (v.outcome === "done" || v.outcome === "stopped" || v.outcome === "watchdog" || v.outcome === "error")
   );
 }
 

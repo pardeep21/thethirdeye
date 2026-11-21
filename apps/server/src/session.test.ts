@@ -136,6 +136,13 @@ test("stats snapshot percentiles over samples", () => {
     triageMs: { p50: 0, p95: 0 },
     silentTurnsRescued: 0,
     providers: {},
+    turns: 0,
+    rescuedTurns: 0,
+    captureFailRate: 0,
+    timeoutRate: { triage: 0, scene: 0, agent: 0, answer: 0, find: 0 },
+    fallbackRate: 0,
+    ttsWatchdogFires: 0,
+    ttsLatencyMs: { p50: 0, p95: 0 },
   });
   for (let i = 1; i <= 10; i++) {
     st.record({ frameWaitMs: i * 10, modelMs: i * 100, totalMs: i * 1000 });

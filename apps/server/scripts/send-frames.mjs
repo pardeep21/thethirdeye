@@ -72,7 +72,15 @@ async function main() {
     const msg = JSON.parse(String(data));
     if (msg.type === "speak") {
       speaks++;
-      console.log(`speak [${msg.priority}] (${msg.lang}): ${msg.text}`);
+      console.log(`speak [${msg.priority}] (${msg.lang}) turn=${msg.turnId ?? "-"}: ${msg.text}`);
+      // Play the phone's part (R7): echo a spoken receipt so the turn log
+      // and /stats latency see the full loop.
+      if (msg.turnId) {
+        const startedAt = Date.now();
+        ws.send(
+          JSON.stringify({ type: "spoken", turnId: msg.turnId, startedAt, endedAt: startedAt + 500, outcome: "done" })
+        );
+      }
     } else {
       console.log(`other: ${String(data).slice(0, 200)}`);
     }

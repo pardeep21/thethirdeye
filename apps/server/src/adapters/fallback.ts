@@ -27,6 +27,14 @@ export interface ChainMember<T> {
   impl: T;
 }
 
+/** Per-attempt details for the stats/turn-log sink (R7). */
+export interface AttemptDetails {
+  ms: number;
+  stage: TimeoutStage;
+  /** R7 turn this attempt belongs to (undefined outside a traced turn). */
+  turnId?: string;
+}
+
 export interface ChainOptions {
   stage: TimeoutStage;
   /** First attempt budget; later attempts share the remaining total. */
@@ -35,7 +43,9 @@ export interface ChainOptions {
   totalMs: number;
   log?: (msg: string) => void;
   /** Stats sink: one call per attempt (never throws the chain off). */
-  record?: (provider: string, outcome: AttemptOutcome) => void;
+  record?: (provider: string, outcome: AttemptOutcome, details: AttemptDetails) => void;
+  /** R7 turn id, carried into the attempt log line and record details. */
+  turnId?: string;
 }
 
 /** True for the mock label or any mock adapter instance. Never chainable. */
@@ -105,6 +115,7 @@ export async function runWithFallback<T>(
   assertNoMock(members.map((m) => ({ provider: m.provider, impl: m.impl })));
   const log = opts.log ?? ((m: string) => console.log(m));
   const started = Date.now();
+  const turnSuffix = opts.turnId !== undefined ? ` turn=${opts.turnId}` : "";
   let lastError: unknown = new ModelTimeoutError(opts.stage, opts.totalMs);
   for (let i = 0; i < members.length; i++) {
     const member = members[i]!;
@@ -113,17 +124,21 @@ export async function runWithFallback<T>(
     // First attempt keeps its cap; every later attempt takes what is left.
     const attemptMs = i === 0 ? Math.min(opts.primaryMs, remaining) : remaining;
     const attemptStart = Date.now();
+    const details = (ms: number): AttemptDetails =>
+      opts.turnId !== undefined
+        ? { ms, stage: opts.stage, turnId: opts.turnId }
+        : { ms, stage: opts.stage };
     try {
       const result = await withTimeout(member.impl(), attemptMs, opts.stage);
       const ms = Date.now() - attemptStart;
-      log(`model_attempt provider=${member.provider} stage=${opts.stage} ok ms=${ms}`);
-      opts.record?.(member.provider, "ok");
+      log(`model_attempt provider=${member.provider} stage=${opts.stage} ok ms=${ms}${turnSuffix}`);
+      opts.record?.(member.provider, "ok", details(ms));
       return result;
     } catch (err) {
       const ms = Date.now() - attemptStart;
       const outcome: AttemptOutcome = err instanceof ModelTimeoutError ? "timeout" : "error";
-      log(`model_attempt provider=${member.provider} stage=${opts.stage} ${outcome} ms=${ms}`);
-      opts.record?.(member.provider, outcome);
+      log(`model_attempt provider=${member.provider} stage=${opts.stage} ${outcome} ms=${ms}${turnSuffix}`);
+      opts.record?.(member.provider, outcome, details(ms));
       lastError = err;
       if (i === members.length - 1) throw err;
       if (!isRetryableError(err)) throw err;
@@ -138,7 +153,7 @@ export interface AgentChainOptions {
   primaryMs: number;
   totalMs: number;
   log?: (msg: string) => void;
-  record?: (provider: string, outcome: AttemptOutcome) => void;
+  record?: (provider: string, outcome: AttemptOutcome, details: AttemptDetails) => void;
 }
 
 /** AgentBrain over primary + backup real providers (usage follows the winner). */
@@ -162,7 +177,7 @@ export class FallbackAgentBrain implements AgentBrain {
         return out;
       },
     }));
-    return runWithFallback(wrapped, { stage: "agent", ...this.opts });
+    return runWithFallback(wrapped, { stage: "agent", ...this.opts, turnId: input.turnId });
   }
 
   getLastUsage(): { promptTokens: number; completionTokens: number } | undefined {
@@ -187,7 +202,7 @@ export class FallbackTriage implements NamedTriage {
     this.name = `fallback:${members.map((m) => m.provider).join("+")}`;
   }
 
-  async triage(img: Buffer, debugLabel?: string): Promise<TriageResult> {
+  async triage(img: Buffer, debugLabel?: string, turnId?: string): Promise<TriageResult> {
     return runWithFallback(
       this.members.map((m) => ({
         provider: m.provider,
@@ -197,11 +212,11 @@ export class FallbackTriage implements NamedTriage {
           return r;
         },
       })),
-      { stage: "triage", ...this.opts }
+      { stage: "triage", ...this.opts, turnId }
     );
   }
 
-  async triageScene(img: Buffer, debugLabel?: string): Promise<SceneTriage> {
+  async triageScene(img: Buffer, debugLabel?: string, turnId?: string): Promise<SceneTriage> {
     return runWithFallback(
       this.members.map((m) => ({
         provider: m.provider,
@@ -211,7 +226,7 @@ export class FallbackTriage implements NamedTriage {
           return r;
         },
       })),
-      { stage: "scene", ...this.opts }
+      { stage: "scene", ...this.opts, turnId }
     );
   }
 
@@ -229,17 +244,17 @@ export class FallbackAnswer implements VisionAnswer {
     assertNoMock(members);
   }
 
-  async describe(img: Buffer, q: string): Promise<string> {
+  async describe(img: Buffer, q: string, turnId?: string): Promise<string> {
     return runWithFallback(
       this.members.map((m) => ({ provider: m.provider, impl: () => m.impl.describe(img, q) })),
-      { stage: "answer", ...this.opts }
+      { stage: "answer", ...this.opts, turnId }
     );
   }
 
-  async read(img: Buffer): Promise<string> {
+  async read(img: Buffer, turnId?: string): Promise<string> {
     return runWithFallback(
       this.members.map((m) => ({ provider: m.provider, impl: () => m.impl.read(img) })),
-      { stage: "answer", ...this.opts }
+      { stage: "answer", ...this.opts, turnId }
     );
   }
 }
@@ -253,17 +268,17 @@ export class FallbackFinder implements ObjectFinder {
     assertNoMock(members);
   }
 
-  async find(img: Buffer, noun: string): Promise<Box[]> {
+  async find(img: Buffer, noun: string, turnId?: string): Promise<Box[]> {
     return runWithFallback(
       this.members.map((m) => ({ provider: m.provider, impl: () => m.impl.find(img, noun) })),
-      { stage: "find", ...this.opts }
+      { stage: "find", ...this.opts, turnId }
     );
   }
 
-  async locate(img: Buffer, noun: string): Promise<LocatedObject | null> {
+  async locate(img: Buffer, noun: string, turnId?: string): Promise<LocatedObject | null> {
     return runWithFallback(
       this.members.map((m) => ({ provider: m.provider, impl: () => m.impl.locate(img, noun) })),
-      { stage: "find", ...this.opts }
+      { stage: "find", ...this.opts, turnId }
     );
   }
 }

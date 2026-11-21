@@ -26,7 +26,7 @@ import {
 import { createFaceMatcher } from "../faces/index.js";
 import type { FaceEmbedder } from "../faces/embed.js";
 import type { AgentBrain, AgentToolMode } from "./agent.js";
-import type { AttemptOutcome } from "./fallback.js";
+import type { AttemptDetails, AttemptOutcome } from "./fallback.js";
 import {
   agentFallbackFromEnv,
   FallbackAgentBrain,
@@ -65,7 +65,7 @@ export interface AdapterDeps {
   /** When set, OpenAI-compat triage writes raw request/response logs here. */
   debugDir?: string;
   /** Stats sink for fallback-chain attempts (R4 model_attempt outcomes). */
-  onModelAttempt?: (provider: string, outcome: AttemptOutcome) => void;
+  onModelAttempt?: (provider: string, outcome: AttemptOutcome, details: AttemptDetails) => void;
 }
 
 /**

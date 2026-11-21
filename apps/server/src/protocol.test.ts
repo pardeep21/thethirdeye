@@ -15,6 +15,7 @@ import {
   isPongMessage,
   isSettingsMessage,
   isSpeakMessage,
+  isSpokenMessage,
   isStateMessage,
   isUtteranceMessage,
 } from "./protocol.js";
@@ -173,3 +174,48 @@ test("ping/pong heartbeat guards", () => {
   assert.equal(isPongMessage(null), false);
 });
 
+
+test("speak/capture_now accept the R7 turnId", () => {
+  assert.equal(
+    isSpeakMessage({ type: "speak", text: "hi", lang: "pa", priority: "P1", turnId: "t7" }),
+    true
+  );
+  assert.equal(
+    isSpeakMessage({ type: "speak", text: "hi", lang: "pa", priority: "P1", turnId: 7 }),
+    false
+  );
+  assert.equal(
+    isCaptureNowMessage({ type: "capture_now", reqId: "r1", turnId: "t7" }),
+    true
+  );
+  assert.equal(
+    isCaptureNowMessage({ type: "capture_now", reqId: "r1", lens: "main", turnId: "t7" }),
+    true
+  );
+  assert.equal(
+    isCaptureNowMessage({ type: "capture_now", reqId: "r1", turnId: 7 }),
+    false
+  );
+});
+
+test("spoken guard accepts receipts and rejects junk", () => {
+  assert.equal(
+    isSpokenMessage({ type: "spoken", turnId: "t7", startedAt: 100, endedAt: 900, outcome: "done" }),
+    true
+  );
+  assert.equal(
+    isSpokenMessage({ type: "spoken", turnId: "t7", startedAt: 100, endedAt: 900, outcome: "watchdog" }),
+    true
+  );
+  assert.equal(
+    isSpokenMessage({ type: "spoken", turnId: "t7", startedAt: 100, endedAt: 900, outcome: "threw" }),
+    false
+  );
+  assert.equal(isSpokenMessage({ type: "spoken", turnId: "t7", startedAt: 100, outcome: "done" }), false);
+  assert.equal(
+    isSpokenMessage({ type: "spoken", turnId: 7, startedAt: 100, endedAt: 900, outcome: "done" }),
+    false
+  );
+  assert.equal(isSpokenMessage({ type: "speak", turnId: "t7" }), false);
+  assert.equal(isSpokenMessage(null), false);
+});

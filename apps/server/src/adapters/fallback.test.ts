@@ -517,6 +517,40 @@ test("attempts feed per-provider /stats counts", async () => {
   await delay(350); // let the slow primary settle into the void
 });
 
+test("R7: chain attempts carry the turnId in logs and record details", async () => {
+  const logs: string[] = [];
+  const records: Array<[string, AttemptOutcome, { ms: number; stage: string; turnId?: string }]> = [];
+  const chain = new FallbackAgentBrain(
+    [
+      { provider: "primary-p", impl: new FakeAgentBrain([{ error: new Error("boom") }]) },
+      { provider: "backup-p", impl: new FakeAgentBrain([{ output: { say: BACKUP_SAY, positions: [], actions: [] } }]) },
+    ],
+    {
+      primaryMs: 50,
+      totalMs: 200,
+      log: (m) => logs.push(m),
+      record: (p, o, d) => records.push([p, o, d]),
+    }
+  );
+  await chain.respond({ ...baseInput(), turnId: "t9" });
+  assert.ok(
+    logs.every((l) => l.includes("turn=t9")),
+    `expected turn=t9 in every attempt line, got: ${logs.join(" | ")}`
+  );
+  assert.deepEqual(
+    records.map(([p, o]) => [p, o]),
+    [
+      ["primary-p", "error"],
+      ["backup-p", "ok"],
+    ]
+  );
+  for (const [, , d] of records) {
+    assert.equal(d.turnId, "t9");
+    assert.equal(d.stage, "agent");
+    assert.ok(d.ms >= 0);
+  }
+});
+
 const FALLBACK_KEYS = [
   "AGENT_FALLBACK_PROVIDER",
   "AGENT_FALLBACK_MODEL",

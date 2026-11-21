@@ -25,6 +25,8 @@ async function startTestServer(
   process.env.PROVIDER = "mock";
   // Stub faces for determinism: a running sidecar must not change test behaviour.
   process.env.FACES = "stub";
+  // Turn logging writes files: disabled in tests.
+  process.env.TURN_LOG_DIR ??= "";
   const store = new PeopleStore(":memory:");
   const server = await startServer(0, { store, embedder, agent, triage, finder, answer });
   return {
@@ -556,6 +558,7 @@ test("agent throw speaks the unsure fallback", async () => {
         lang: "pa",
         priority: "P1",
         kind: "answer",
+        turnId: "t1",
       });
       assert.ok(got.some((m) => m.type === "earcon" && m.name === "error"), "error earcon sent");
     } finally {

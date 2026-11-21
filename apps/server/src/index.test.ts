@@ -4,6 +4,9 @@
 // mode on -> scene summary -> silence -> new-person clock line.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WebSocket } from "ws";
 import sharp from "sharp";
 import { startServer } from "./index.js";
@@ -43,6 +46,8 @@ async function startTestServer(
   process.env.PROVIDER = "mock";
   // Stub faces for determinism: a running sidecar must not change test behaviour.
   process.env.FACES = "stub";
+  // Turn logging writes files: disabled unless a test points it at a tmp dir.
+  process.env.TURN_LOG_DIR ??= "";
   const store = new PeopleStore(":memory:");
   const server = await startServer(0, { store, embedder, agent, triage, finder, answer });
   return {
@@ -161,6 +166,7 @@ test("frame over WS yields a speak message (mock provider)", async () => {
         lang: "pa",
         priority: "P1",
         kind: "cash",
+        turnId: "t1",
       });
     } finally {
       ws.close();
@@ -187,6 +193,7 @@ test("audio describe command yields the mock answer", async () => {
         lang: "pa",
         priority: "P1",
         kind: "answer",
+        turnId: "t2",
       });
     } finally {
       ws.close();
@@ -212,6 +219,7 @@ test("audio who command with no perception yet says Koi nahi", async () => {
         lang: "pa",
         priority: "P1",
         kind: "answer",
+        turnId: "t1",
       });
     } finally {
       ws.close();
@@ -239,6 +247,7 @@ test("audio how-much command forces a fresh note read", async () => {
         lang: "pa",
         priority: "P1",
         kind: "answer",
+        turnId: "t2",
       });
     } finally {
       ws.close();
@@ -266,6 +275,7 @@ test("settings message switches the answer language", async () => {
         lang: "en",
         priority: "P1",
         kind: "cash",
+        turnId: "t1",
       });
     } finally {
       ws.close();
@@ -428,6 +438,7 @@ test("utterance fast path: howmuch reuses the fresh note read", async () => {
         lang: "pa",
         priority: "P1",
         kind: "answer",
+        turnId: "t2",
       });
       assert.ok(got.every((m) => m.type !== "capture_now"), "fast path must not request a frame");
     } finally {
@@ -968,7 +979,7 @@ test("agent failure speaks the unsure fallback plus earcon:error", async () => {
       const got = await collectUntil(ws, (m) => m.type === "speak", 2000);
       assert.deepEqual(
         got.find((m) => m.type === "speak"),
-        { type: "speak", id: "spk-1", text: "pakka nahi, dobara bolo", lang: "pa", priority: "P1", kind: "answer" }
+        { type: "speak", id: "spk-1", text: "pakka nahi, dobara bolo", lang: "pa", priority: "P1", kind: "answer", turnId: "t1" }
       );
       assert.ok(got.some((m) => m.type === "earcon" && m.name === "error"), "error earcon sent");
     } finally {
@@ -1781,6 +1792,144 @@ test("R5: hello from an unknown device starts fresh (no state push)", async () =
       ws2.close();
     }
   } finally {
+    await t.done();
+  }
+});
+
+// ---- R7: turn tracing and reliability stats ----
+
+test("R7: capture_now and speak carry the turnId; spoken receipts feed /stats", async () => {
+  const agent = new MockAgentBrain();
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "ki hai saamne");
+      const early = await collectUntil(ws, (m) => m.type === "capture_now", 2000);
+      const capture = early.find((m) => m.type === "capture_now") as {
+        reqId: string;
+        turnId?: string;
+      };
+      assert.ok(capture?.reqId);
+      assert.equal(capture.turnId, "t1");
+
+      // One collector for the whole turn: the proactive cash speak can
+      // land before or after the agent's idle state, and two sequential
+      // collectors would miss it in the gap between them.
+      const late: Array<Record<string, unknown>> = [];
+      const both = new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 2000);
+        const onMsg = (data: unknown): void => {
+          late.push(JSON.parse(String(data)) as Record<string, unknown>);
+          const idle = late.some((m) => m.type === "state" && m.agentBusy === false);
+          const cash = late.some((m) => m.type === "speak" && m.kind === "cash");
+          if (idle && cash) {
+            clearTimeout(timer);
+            ws.off("message", onMsg);
+            resolve();
+          }
+        };
+        ws.on("message", onMsg);
+      });
+      sendFrame(ws, { reqId: capture.reqId, lens: "main", hfovDeg: 100 });
+      await both;
+      const answer = late.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(answer?.turnId, "t1");
+      // The capture frame also feeds the proactive engine under its own turn.
+      const cash = late.find((m) => m.type === "speak" && m.kind === "cash");
+      assert.equal(cash?.turnId, "t2");
+
+      const now = Date.now();
+      ws.send(
+        JSON.stringify({ type: "spoken", turnId: "t1", startedAt: now, endedAt: now + 100, outcome: "done" })
+      );
+      ws.send(
+        JSON.stringify({ type: "spoken", turnId: "t2", startedAt: now, endedAt: now + 200, outcome: "watchdog" })
+      );
+      await new Promise((r) => setTimeout(r, 150));
+      const stats = (await (await fetch(`http://127.0.0.1:${t.port}/stats`)).json()) as {
+        turns: number;
+        rescuedTurns: number;
+        captureFailRate: number;
+        fallbackRate: number;
+        ttsWatchdogFires: number;
+        ttsLatencyMs: { p50: number; p95: number };
+      };
+      assert.equal(stats.turns, 2);
+      assert.equal(stats.rescuedTurns, 0);
+      assert.equal(stats.captureFailRate, 0);
+      assert.equal(stats.fallbackRate, 0);
+      assert.equal(stats.ttsWatchdogFires, 1);
+      assert.ok(stats.ttsLatencyMs.p50 >= 0);
+      assert.ok(stats.ttsLatencyMs.p95 >= stats.ttsLatencyMs.p50);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("R7: TURN_LOG_DIR writes one JSON line per turn with attempts and spoken", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "turns-"));
+  process.env.TURN_LOG_DIR = dir;
+  const t = await startTestServer(undefined, new MockAgentBrain());
+  try {
+    const ws = await openClient(t.port);
+    try {
+      sendUtterance(ws, "ki hai saamne");
+      const early = await collectUntil(ws, (m) => m.type === "capture_now", 2000);
+      const capture = early.find((m) => m.type === "capture_now") as { reqId: string };
+      sendFrame(ws, { reqId: capture.reqId, lens: "main", hfovDeg: 100 });
+      await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 2000);
+      const now = Date.now();
+      ws.send(
+        JSON.stringify({ type: "spoken", turnId: "t1", startedAt: now, endedAt: now + 100, outcome: "done" })
+      );
+      // The receipt is handled before the close; the close flushes the
+      // proactive turn that got no receipt.
+      await new Promise((r) => setTimeout(r, 150));
+    } finally {
+      ws.close();
+    }
+    await new Promise((r) => setTimeout(r, 150));
+
+    const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
+    assert.equal(files.length, 1);
+    const lines = readFileSync(join(dir, files[0]!), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    assert.equal(lines.length, 2);
+    const user = lines.find((l) => l.turnId === "t1") as unknown as {
+      kind: string;
+      intent: string;
+      capture: string;
+      attempts: Array<{ provider: string; stage: string; outcome: string }>;
+      text: string;
+      rescued: boolean;
+      spoken: { outcome: string; latencyMs: number } | null;
+    };
+    assert.equal(user.kind, "utterance");
+    assert.equal(user.intent, "describe");
+    assert.equal(user.capture, "ok");
+    assert.equal(user.attempts.length, 1);
+    assert.equal(user.attempts[0]?.provider, "mock");
+    assert.equal(user.attempts[0]?.stage, "agent");
+    assert.equal(user.attempts[0]?.outcome, "ok");
+    assert.equal(user.text, "Mock saamne: counter te samaan 12 vje");
+    assert.equal(user.rescued, false);
+    assert.equal(user.spoken?.outcome, "done");
+    assert.ok((user.spoken?.latencyMs ?? -1) >= 0);
+    const pro = lines.find((l) => l.turnId === "t2") as unknown as {
+      kind: string;
+      spoken: unknown;
+    };
+    assert.equal(pro.kind, "proactive");
+    // No receipt was sent for the proactive turn: flushed with spoken=null.
+    assert.equal(pro.spoken, null);
+  } finally {
+    delete process.env.TURN_LOG_DIR;
     await t.done();
   }
 });

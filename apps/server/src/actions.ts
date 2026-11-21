@@ -82,10 +82,17 @@ export interface ActionContext {
   find?: FindActions;
   /** Timeout sink for model calls (stats + log); the line is still spoken. */
   onTimeout?: (stage: TimeoutStage, timeoutMs: number) => void;
-  /** Fired whenever an action queues a speak (cash_check, find, people flows). */
-  onSpoke?: () => void;
+  /**
+   * Fired whenever an action queues a speak (cash_check, find, people
+   * flows), with the queued line for turn-log text tracking.
+   */
+  onSpoke?: (text?: string) => void;
   /** Barge-in: when true, speech is skipped (state flips still apply). */
   isCancelled?: () => boolean;
+  /** R7 turn id: queued speaks and find attempts carry it. */
+  turnId?: string;
+  /** R7 attempt sink for the find call (the finder is never chained). */
+  onAttempt?: (stage: TimeoutStage, ms: number, outcome: "ok" | "timeout" | "error") => void;
 }
 
 function norm(name: string): string {
@@ -280,14 +287,18 @@ async function findObject(ctx: ActionContext, f: FindActions, noun: string): Pro
   const clean = noun.trim();
   if (!f.frame) return renderAgentUnsure(lang);
   let loc;
+  const start = Date.now();
   try {
     loc = await withTimeout(f.finder.locate(f.frame.jpeg, clean), findTimeoutFromEnv(), "find");
+    ctx.onAttempt?.("find", Date.now() - start, "ok");
   } catch (err) {
     if (err instanceof ModelTimeoutError) {
       ctx.onTimeout?.("find", err.timeoutMs);
+      ctx.onAttempt?.("find", Date.now() - start, "timeout");
       return renderModelTimeout(lang);
     }
     console.error("find failed:", err instanceof Error ? err.message : err);
+    ctx.onAttempt?.("find", Date.now() - start, "error");
     return renderAgentUnsure(lang);
   }
   return renderFindLocated(clean, loc, f.frame.hfovDeg, lang);
@@ -316,8 +327,8 @@ export async function applyAgentActions(
   const sayPeople = (text: string): void => {
     if (ctx.isCancelled?.()) return;
     said = text;
-    ctx.engine.answer(text, ctx.session.lang);
-    ctx.onSpoke?.();
+    ctx.engine.answer(text, ctx.session.lang, undefined, ctx.turnId);
+    ctx.onSpoke?.(text);
   };
   for (const a of actions) {
     switch (a.tool) {
@@ -335,8 +346,8 @@ export async function applyAgentActions(
       case "cash_check": {
         const line = await ctx.cashCheck();
         if (ctx.isCancelled?.()) break;
-        ctx.engine.answer(line, ctx.session.lang);
-        ctx.onSpoke?.();
+        ctx.engine.answer(line, ctx.session.lang, undefined, ctx.turnId);
+        ctx.onSpoke?.(line);
         break;
       }
       case "find": {

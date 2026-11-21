@@ -30,6 +30,8 @@ export interface AgentInput {
   scene: SceneState;
   lang: SpeakLang;
   script: SpokenScript;
+  /** R7 turn id (fallback chains log and record attempts under it). */
+  turnId?: string;
 }
 
 export interface AgentOutput {

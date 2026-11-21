@@ -71,12 +71,15 @@ export interface SpeakAction {
   priority: Priority;
   event: DecisionEvent;
   enqueuedAt: number;
+  /** R7 turn that enqueued this line (carried into the speak message). */
+  turnId?: string;
 }
 
 interface Queued {
   event: DecisionEvent;
   priority: Priority;
   enqueuedAt: number;
+  turnId?: string;
 }
 
 /** Minimal English renderer for M2 wiring; M3 replaces it with real phrases. */
@@ -135,11 +138,16 @@ export class DecisionEngine {
     private readonly clock: () => number = Date.now
   ) {}
 
-  onFrame(triage: TriageResult, tracks: KnownTrackSight[], nowMs: number = this.clock()): DecisionEvent[] {
+  onFrame(
+    triage: TriageResult,
+    tracks: KnownTrackSight[],
+    nowMs: number = this.clock(),
+    turnId?: string
+  ): DecisionEvent[] {
     const fired: DecisionEvent[] = [];
-    this.updateNotes(triage, nowMs, fired);
-    const knownFired = this.updateKnown(tracks, nowMs, fired);
-    this.updatePersonCount(triage, nowMs, fired, knownFired);
+    this.updateNotes(triage, nowMs, fired, turnId);
+    const knownFired = this.updateKnown(tracks, nowMs, fired, turnId);
+    this.updatePersonCount(triage, nowMs, fired, knownFired, turnId);
     return fired;
   }
 
@@ -152,7 +160,7 @@ export class DecisionEngine {
     return t;
   }
 
-  private updateNotes(triage: TriageResult, nowMs: number, fired: DecisionEvent[]): void {
+  private updateNotes(triage: TriageResult, nowMs: number, fired: DecisionEvent[], turnId?: string): void {
     const confByDenom = new Map<Denomination, number>();
     let nullPresent = false;
     for (const n of triage.notes) {
@@ -198,7 +206,7 @@ export class DecisionEngine {
         denominations: newlyStable.map((s) => s.d),
         confidences: newlyStable.map((s) => s.conf),
       };
-      this.enqueueP1(ev, nowMs);
+      this.enqueueP1(ev, nowMs, turnId);
       fired.push(ev);
     }
     if (
@@ -207,12 +215,17 @@ export class DecisionEngine {
     ) {
       this.unsureSpokenAt = nowMs;
       const ev: DecisionEvent = { kind: "NOTE_UNSURE" };
-      this.enqueueP1(ev, nowMs);
+      this.enqueueP1(ev, nowMs, turnId);
       fired.push(ev);
     }
   }
 
-  private updateKnown(tracks: KnownTrackSight[], nowMs: number, fired: DecisionEvent[]): number {
+  private updateKnown(
+    tracks: KnownTrackSight[],
+    nowMs: number,
+    fired: DecisionEvent[],
+    turnId?: string
+  ): number {
     const matched = new Map<string, { name: string; clock: number }>();
     for (const t of tracks) {
       if (t.knownPersonId && t.knownName && !matched.has(t.knownPersonId)) {
@@ -234,7 +247,7 @@ export class DecisionEngine {
       if (!this.muted && m && hits >= 2 && nowMs - t.spokenAt >= KNOWN_SILENCE_MS) {
         t.spokenAt = nowMs;
         const ev: DecisionEvent = { kind: "KNOWN_ARRIVED", personId: id, name: m.name, clock: m.clock };
-        this.enqueueP2(ev, nowMs);
+        this.enqueueP2(ev, nowMs, turnId);
         fired.push(ev);
         count++;
       }
@@ -246,7 +259,8 @@ export class DecisionEngine {
     triage: TriageResult,
     nowMs: number,
     fired: DecisionEvent[],
-    knownFired: number
+    knownFired: number,
+    turnId?: string
   ): void {
     const count = triage.people.length;
     if (count > this.prevCount) {
@@ -268,24 +282,24 @@ export class DecisionEngine {
       this.personFiredAt = nowMs;
       this.personSpokenAt = nowMs;
       const ev: DecisionEvent = { kind: "PERSON_ARRIVED", count, people: triage.people };
-      this.enqueueP3(ev, nowMs);
+      this.enqueueP3(ev, nowMs, turnId);
       fired.push(ev);
     }
   }
 
   /** User asked something: answer speaks as P1 behind any cash already queued. */
-  answer(text: string, lang: SpeakLang, nowMs: number = this.clock()): void {
-    this.enqueueP1({ kind: "COMMAND_ANSWER", text, lang }, nowMs);
+  answer(text: string, lang: SpeakLang, nowMs: number = this.clock(), turnId?: string): void {
+    this.enqueueP1({ kind: "COMMAND_ANSWER", text, lang }, nowMs, turnId);
   }
 
   /**
    * Look-around narration in: summary speaks as P2, updates as P3 (stale
    * drops and P1 yielding come from the queues). Muted drops both.
    */
-  announceScene(event: SceneDecisionEvent, nowMs: number = this.clock()): void {
+  announceScene(event: SceneDecisionEvent, nowMs: number = this.clock(), turnId?: string): void {
     if (this.muted) return;
-    if (event.kind === "SCENE_SUMMARY") this.enqueueP2(event, nowMs);
-    else this.enqueueP3(event, nowMs);
+    if (event.kind === "SCENE_SUMMARY") this.enqueueP2(event, nowMs, turnId);
+    else this.enqueueP3(event, nowMs, turnId);
   }
 
   setMuted(muted: boolean): void {
@@ -331,22 +345,36 @@ export class DecisionEngine {
 
   private renderQueued(q: Queued): SpeakAction {
     if (q.event.kind === "COMMAND_ANSWER") {
-      return { text: q.event.text, lang: q.event.lang, priority: q.priority, event: q.event, enqueuedAt: q.enqueuedAt };
+      return {
+        text: q.event.text,
+        lang: q.event.lang,
+        priority: q.priority,
+        event: q.event,
+        enqueuedAt: q.enqueuedAt,
+        turnId: q.turnId,
+      };
     }
     const r = this.render(q.event);
-    return { text: r.text, lang: r.lang, priority: q.priority, event: q.event, enqueuedAt: q.enqueuedAt };
+    return {
+      text: r.text,
+      lang: r.lang,
+      priority: q.priority,
+      event: q.event,
+      enqueuedAt: q.enqueuedAt,
+      turnId: q.turnId,
+    };
   }
 
-  private enqueueP1(event: DecisionEvent, nowMs: number): void {
-    this.p1.push({ event, priority: "P1", enqueuedAt: nowMs });
+  private enqueueP1(event: DecisionEvent, nowMs: number, turnId?: string): void {
+    this.p1.push({ event, priority: "P1", enqueuedAt: nowMs, turnId });
     if (this.p1.length > P1_QUEUE_MAX) this.p1.shift();
   }
 
-  private enqueueP2(event: DecisionEvent, nowMs: number): void {
-    this.p2.push({ event, priority: "P2", enqueuedAt: nowMs });
+  private enqueueP2(event: DecisionEvent, nowMs: number, turnId?: string): void {
+    this.p2.push({ event, priority: "P2", enqueuedAt: nowMs, turnId });
   }
 
-  private enqueueP3(event: DecisionEvent, nowMs: number): void {
-    this.p3 = { event, priority: "P3", enqueuedAt: nowMs };
+  private enqueueP3(event: DecisionEvent, nowMs: number, turnId?: string): void {
+    this.p3 = { event, priority: "P3", enqueuedAt: nowMs, turnId };
   }
 }
