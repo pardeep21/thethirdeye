@@ -9,6 +9,7 @@ import {
   isPongMessage,
   isSpeakMessage,
   isStateMessage,
+  type CameraState,
   type CaptureNowMessage,
   type EarconMessage,
   type LensId,
@@ -245,6 +246,10 @@ export class EyeWs {
 
   sendCommand(name: "mute" | "unmute" | "cancel"): void {
     this.sendJson({ type: "command", name });
+  }
+
+  sendCameraState(state: CameraState): void {
+    this.sendJson({ type: "camera_state", state });
   }
 
   sendSettings(lang: SpeakLang, script?: SpokenScript): void {

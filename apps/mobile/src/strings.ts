@@ -322,6 +322,20 @@ export const NO_NETWORK: Record<SpeakLang, string> = {
   en: "no network",
 };
 
+/** Phone-local camera-down line, spoken once on stall/error/backgrounding. */
+export const CAMERA_OFF: Record<SpeakLang, string> = {
+  pa: "camera band hai",
+  hi: "camera band hai",
+  en: "camera off",
+};
+
+/** Phone-local camera-recovery line, spoken once when frames resume. */
+export const CAMERA_BACK: Record<SpeakLang, string> = {
+  pa: "camera chalu",
+  hi: "camera chalu",
+  en: "camera back",
+};
+
 /** Phone-local recovery line, spoken once after an announced drop. */
 export const NETWORK_BACK: Record<SpeakLang, string> = {
   pa: "network wapas",

@@ -142,6 +142,16 @@ export interface CaptureFailedMessage {
   reason: string;
 }
 
+/** Phone -> server camera liveness (R6): ok = frames flowing, stalled = no
+ * gate frame for 4 s while the camera should run, off = backgrounded or no
+ * camera. The server answers vision questions with no-camera while != ok. */
+export type CameraState = "ok" | "stalled" | "off";
+
+export interface CameraStateMessage {
+  type: "camera_state";
+  state: CameraState;
+}
+
 /** Server -> phone: mode/state snapshot for the home screen. */
 export interface StateMessage {
   type: "state";
@@ -163,6 +173,7 @@ export type UpMessage =
   | ListeningMessage
   | ModeMessage
   | CaptureFailedMessage
+  | CameraStateMessage
   | PingMessage;
 export type DownMessage =
   | SpeakMessage
@@ -278,6 +289,11 @@ export function isCaptureNowMessage(v: unknown): v is CaptureNowMessage {
 export function isCaptureFailedMessage(v: unknown): v is CaptureFailedMessage {
   if (!isRecord(v) || v.type !== "capture_failed") return false;
   return typeof v.reqId === "string" && typeof v.reason === "string";
+}
+
+export function isCameraStateMessage(v: unknown): v is CameraStateMessage {
+  if (!isRecord(v) || v.type !== "camera_state") return false;
+  return v.state === "ok" || v.state === "stalled" || v.state === "off";
 }
 
 export function isStateMessage(v: unknown): v is StateMessage {

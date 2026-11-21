@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   isAudioMessage,
+  isCameraStateMessage,
   isCaptureFailedMessage,
   isCommandMessage,
   isFrameMessage,
@@ -485,9 +486,10 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
     /**
      * Capture outcome for the utterance log: ok = fresh capture used;
      * failed = the phone reported capture_failed; late = no capture but a
-     * usable (<1500 ms) last frame filled in; stale_fallback = neither.
+     * usable (<1500 ms) last frame filled in; stale_fallback = neither;
+     * camera_off = vision short-circuited, no capture requested (R6).
      */
-    type CaptureStatus = "ok" | "late" | "failed" | "stale_fallback";
+    type CaptureStatus = "ok" | "late" | "failed" | "stale_fallback" | "camera_off";
 
     function logTimings(
       tRx: number,
@@ -649,6 +651,32 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           }
         }
 
+        // R6: the phone reports its camera liveness. A vision question
+        // while the camera is down answers no-camera immediately instead
+        // of waiting out the capture timeout for a frame that won't come.
+        const needsVision =
+          intent.kind === "describe" ||
+          intent.kind === "read" ||
+          intent.kind === "find" ||
+          intent.kind === "who";
+        if (needsVision && session.cameraState !== "ok") {
+          session.agentBusy = true;
+          didBusy = true;
+          pushState();
+          const line = renderNoCamera(session.lang);
+          answerTurn(turnId, line);
+          sendDrained();
+          session.pushTurn({ role: "user", text });
+          session.pushTurn({ role: "assistant", text: line });
+          didPush = true;
+          const tShort = Date.now();
+          stats.record({ frameWaitMs: 0, modelMs: 0, totalMs: tShort - tRx });
+          logTimings(tRx, tShort, tShort, tShort, tShort, "camera_off");
+          session.agentBusy = false;
+          pushState();
+          return;
+        }
+
         // Agent path: fresh frame, then one model call with memory + scene.
         session.agentBusy = true;
         didBusy = true;
@@ -663,11 +691,7 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
 
         // R2: vision questions need a usable image (this capture, or a
         // last frame younger than 1500 ms). Chat may go without one.
-        const isVision =
-          intent.kind === "describe" ||
-          intent.kind === "read" ||
-          intent.kind === "find" ||
-          intent.kind === "who";
+        const isVision = needsVision;
         const lastAge =
           session.lastFrame === null ? Infinity : tFrame - session.lastFrame.receivedAt;
         const freshFallback =
@@ -1073,6 +1097,10 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       }
       if (isCaptureFailedMessage(msg)) {
         pendingCaptures.get(msg.reqId)?.("failed");
+        return [];
+      }
+      if (isCameraStateMessage(msg)) {
+        session.cameraState = msg.state;
         return [];
       }
       if (isAudioMessage(msg)) {

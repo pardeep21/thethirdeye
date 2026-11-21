@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   isAudioMessage,
+  isCameraStateMessage,
   isCaptureFailedMessage,
   isCaptureNowMessage,
   isCommandMessage,
@@ -146,6 +147,17 @@ test("capture_failed guard", () => {
   assert.equal(isCaptureFailedMessage({ type: "capture_failed", reqId: 7, reason: "x" }), false);
   assert.equal(isCaptureFailedMessage({ type: "frame", reqId: "r1", reason: "x" }), false);
   assert.equal(isCaptureFailedMessage(null), false);
+});
+
+test("camera_state guard accepts ok/stalled/off and rejects junk", () => {
+  assert.equal(isCameraStateMessage({ type: "camera_state", state: "ok" }), true);
+  assert.equal(isCameraStateMessage({ type: "camera_state", state: "stalled" }), true);
+  assert.equal(isCameraStateMessage({ type: "camera_state", state: "off" }), true);
+  assert.equal(isCameraStateMessage({ type: "camera_state", state: "broken" }), false);
+  assert.equal(isCameraStateMessage({ type: "camera_state" }), false);
+  assert.equal(isCameraStateMessage({ type: "camera_state", state: null }), false);
+  assert.equal(isCameraStateMessage({ type: "frame", state: "ok" }), false);
+  assert.equal(isCameraStateMessage(null), false);
 });
 
 test("ping/pong heartbeat guards", () => {

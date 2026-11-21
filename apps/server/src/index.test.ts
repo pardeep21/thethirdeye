@@ -1617,6 +1617,87 @@ test("R2: chat without any image still reaches the agent", async () => {
   }
 });
 
+test("R6: vision question while camera_state=stalled answers no-camera with no capture_now", async () => {
+  process.env.CAPTURE_TIMEOUT_MS = "2500";
+  const agent = new MockAgentBrain();
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      ws.send(JSON.stringify({ type: "camera_state", state: "stalled" }));
+      sendUtterance(ws, "ki hai saamne");
+      const late = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 3000);
+      assert.ok(late.every((m) => m.type !== "capture_now"), "short-circuit must not request a frame");
+      const answer = late.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(answer?.text, "camera ton tasveer nahi aayi, dobara puchho");
+      assert.equal(agent.inputs.length, 0, "the model must never be called");
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.CAPTURE_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+test("R6: camera_state off blocks vision, ok recovers the capture round trip", async () => {
+  process.env.CAPTURE_TIMEOUT_MS = "2500";
+  const agent = new MockAgentBrain();
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      ws.send(JSON.stringify({ type: "camera_state", state: "off" }));
+      sendUtterance(ws, "ki hai saamne");
+      const blocked = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 3000);
+      assert.ok(blocked.every((m) => m.type !== "capture_now"), "off camera must not request a frame");
+      const answer = blocked.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(answer?.text, "camera ton tasveer nahi aayi, dobara puchho");
+      assert.equal(agent.inputs.length, 0, "the model must never be called");
+
+      ws.send(JSON.stringify({ type: "camera_state", state: "ok" }));
+      sendUtterance(ws, "ki hai saamne");
+      const early = await collectUntil(ws, (m) => m.type === "capture_now", 3000);
+      const capture = early.find((m) => m.type === "capture_now") as { reqId: string };
+      assert.ok(capture?.reqId, `expected capture_now after recovery, got: ${JSON.stringify(early)}`);
+      sendFrame(ws, { reqId: capture.reqId });
+      const late = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 3000);
+      assert.equal(agent.inputs.length, 1, "recovered vision must reach the model");
+      assert.ok(
+        late.some((m) => m.type === "speak" && m.kind === "answer"),
+        "recovered vision must answer"
+      );
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.CAPTURE_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
+test("R6: chat while camera_state=stalled still reaches the agent", async () => {
+  process.env.CAPTURE_TIMEOUT_MS = "50";
+  const agent = new MockAgentBrain();
+  const t = await startTestServer(undefined, agent);
+  try {
+    const ws = await openClient(t.port);
+    try {
+      ws.send(JSON.stringify({ type: "camera_state", state: "stalled" }));
+      sendUtterance(ws, "ki haal hai");
+      const late = await collectUntil(ws, (m) => m.type === "state" && m.agentBusy === false, 3000);
+      const answer = late.find((m) => m.type === "speak" && m.kind === "answer");
+      assert.equal(answer?.text, "Mock saamne: counter te samaan 12 vje");
+      assert.equal(agent.inputs.length, 1);
+    } finally {
+      ws.close();
+    }
+  } finally {
+    delete process.env.CAPTURE_TIMEOUT_MS;
+    await t.done();
+  }
+});
+
 test("R5: every ping is answered immediately with a pong echoing t", async () => {
   const t = await startTestServer();
   try {

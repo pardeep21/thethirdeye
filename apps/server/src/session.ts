@@ -3,7 +3,7 @@
 // the compact scene state the agent sees. In memory only; on disconnect
 // it is parked by device for 60 s so a quick reconnect resumes it
 // (see sessionStore.ts), otherwise a new connection starts fresh.
-import type { SceneTriage, SpeakLang, SpokenScript, TriagePerson, TriageResult } from "./protocol.js";
+import type { CameraState, SceneTriage, SpeakLang, SpokenScript, TriagePerson, TriageResult } from "./protocol.js";
 import { toClock } from "./clock.js";
 import type { FaceTrack } from "./faces/tracker.js";
 
@@ -108,6 +108,8 @@ export class Session {
   muted = false;
   agentBusy = false;
   lastFrame: SessionFrame | null = null;
+  /** Phone-reported camera liveness (R6); "ok" until the phone says otherwise. */
+  cameraState: CameraState = "ok";
   sceneState: SceneState = emptyScene();
   pendingAction: PendingAction | null = null;
   lastRead: LastRead | null = null;

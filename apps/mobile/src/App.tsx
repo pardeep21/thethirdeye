@@ -22,6 +22,7 @@ import type {
   UtteranceLang,
 } from "../../server/src/protocol";
 import { createGate, shouldSendGate } from "./gate";
+import { cameraLiveness, livenessTransition, type CameraLiveness } from "./cameraLiveness";
 import { resolveHfov, useGateFrameProcessor } from "./camera";
 import { LENS_SETTLE_MS, resolveCaptureLens } from "./cameraLens";
 import { EyeWs } from "./ws";
@@ -42,7 +43,7 @@ import { ExpoRecognizer } from "./voice/recognizer";
 import { resolveRecognitionLocale, type RecogLocale } from "./voice/locale";
 import { playEarcon } from "./voice/earcons";
 import { addCaption, useCaptions, usePartial } from "./voice/captions";
-import { GREETING, NETWORK_BACK, NO_NETWORK, STRINGS } from "./strings";
+import { CAMERA_BACK, CAMERA_OFF, GREETING, NETWORK_BACK, NO_NETWORK, STRINGS } from "./strings";
 import { colors } from "./theme";
 
 /** Min ms between gate evaluations: the frame path runs faster than 2 fps. */
@@ -55,6 +56,11 @@ const CASH_READ_TEXT = "eh kinne da";
 const CAPTURE_RETRY_MS = 150;
 /** capture_failed reason when takePhoto returns null or throws (after the retry). */
 const CAPTURE_FAILED_REASON = "take-photo-failed";
+/** Liveness tick: re-evaluate the camera stall monitor this often. */
+const LIVENESS_TICK_MS = 1000;
+/** Camera onError recovery: isActive off, then back on after this gap. */
+const CAMERA_RESTART_MS = 1000;
+const CAMERA_RESUME_MS = 250;
 
 export default function App() {
   const mainDevice = useCameraDevice("back");
@@ -62,6 +68,15 @@ export default function App() {
   const cameraRef = useRef<Camera>(null);
   const gateRef = useRef(createGate());
   const lastTickRef = useRef(0);
+  // R6 frame liveness: last gate-processor output, when the camera last
+  // became active, the last announced state (null until baselined), and
+  // the one-shot error/restart episode flags.
+  const lastGateFrameAtRef = useRef<number | null>(null);
+  const cameraActiveSinceRef = useRef<number | null>(null);
+  const livenessRef = useRef<CameraLiveness | null>(null);
+  const cameraErrorRef = useRef(false);
+  const cameraRestartedRef = useRef(false);
+  const [cameraSuspended, setCameraSuspended] = useState(false);
   const captureLockRef = useRef(new CaptureLock());
   // True between an announced drop ("network nahi" spoken) and its recovery.
   const announcedLostRef = useRef(false);
@@ -258,6 +273,9 @@ export default function App() {
           if (ok) {
             setAuthFailed(false);
             ws.sendSettings(langRef.current, scriptRef.current);
+            // The server's session may be fresh (or resumed stale): sync
+            // the current camera liveness so vision short-circuits right.
+            if (livenessRef.current !== null) ws.sendCameraState(livenessRef.current);
             if (lookRef.current) ws.sendMode(true);
             void refreshPeople();
             if (!greetedRef.current) {
@@ -378,6 +396,10 @@ export default function App() {
   const onGray = useCallback(
     (gray: Uint8Array) => {
       const nowMs = Date.now();
+      // R6 liveness: every processor output proves the camera path is
+      // alive, before the gate throttle below drops it.
+      lastGateFrameAtRef.current = nowMs;
+      cameraErrorRef.current = false;
       if (nowMs - lastTickRef.current < GATE_TICK_MS) return;
       lastTickRef.current = nowMs;
       const heartbeat = lookRef.current ? LOOK_HEARTBEAT_MS : undefined;
@@ -425,6 +447,60 @@ export default function App() {
   }, []);
 
   const cameraVisible = device != null && hasPermission;
+  const appActiveRef = useRef(appActive);
+  appActiveRef.current = appActive;
+  const cameraVisibleRef = useRef(cameraVisible);
+  cameraVisibleRef.current = cameraVisible;
+
+  // R6 liveness check: evaluate ok/stalled/off, uplink changes, and speak
+  // "camera band hai"/"camera chalu" exactly once per transition. Runs on
+  // a 1 s tick and immediately on foreground/background changes.
+  const checkLiveness = useCallback(() => {
+    const next = cameraLiveness({
+      shouldRun: appActiveRef.current && cameraVisibleRef.current,
+      lastFrameAt: lastGateFrameAtRef.current,
+      activeSinceMs: cameraActiveSinceRef.current,
+      nowMs: Date.now(),
+      cameraError: cameraErrorRef.current,
+    });
+    const prev = livenessRef.current;
+    if (prev === null) {
+      // Baseline: tell the server the starting state, but stay silent.
+      livenessRef.current = next;
+      wsRef.current?.sendCameraState(next);
+      return;
+    }
+    const t = livenessTransition(prev, next);
+    if (!t.sendState) return;
+    livenessRef.current = next;
+    wsRef.current?.sendCameraState(next);
+    if (t.speak === "off") {
+      const text = CAMERA_OFF[langRef.current];
+      queueRef.current.enqueue({ type: "speak", text, lang: langRef.current, priority: "P1", kind: "system" });
+      addCaption(text, "system");
+    } else if (t.speak === "back") {
+      cameraErrorRef.current = false;
+      cameraRestartedRef.current = false;
+      const text = CAMERA_BACK[langRef.current];
+      queueRef.current.enqueue({ type: "speak", text, lang: langRef.current, priority: "P1", kind: "system" });
+      addCaption(text, "system");
+    }
+  }, []);
+
+  // R6: a dead session stops frames; the liveness tick announces it (a
+  // sub-second transient clears on the next frame and stays silent). One
+  // restart per episode: isActive off after 1 s, back on 250 ms later.
+  const handleCameraError = useCallback((error: { code: string; message: string }) => {
+    console.log(`camera error code=${error.code} message=${error.message}`);
+    cameraErrorRef.current = true;
+    if (cameraRestartedRef.current) return;
+    cameraRestartedRef.current = true;
+    setTimeout(() => {
+      setCameraSuspended(true);
+      setTimeout(() => setCameraSuspended(false), CAMERA_RESUME_MS);
+    }, CAMERA_RESTART_MS);
+  }, []);
+
   const showPreview = cameraVisible && showCamera && screen === "home";
   const renderCamera = (style: StyleProp<ViewStyle>): React.JSX.Element | null => {
     if (device == null) return null;
@@ -435,16 +511,17 @@ export default function App() {
         photo={true}
         pixelFormat="yuv"
         frameProcessor={frameProcessor}
-        isActive={appActive}
+        isActive={appActive && !cameraSuspended}
+        onError={handleCameraError}
         zoom={(lensOverride ?? lens) === "ultrawide" ? device.minZoom : device.neutralZoom}
         style={style}
       />
     );
   };
 
-  // Battery: the camera (2 fps gate) runs only in the foreground, and
-  // keep-awake is held only while the camera runs. Backgrounding stops
-  // frames; the socket stays up and the heartbeat resumes on return.
+  // Battery: the camera (2 fps gate) runs only in the foreground.
+  // Backgrounding stops frames; the socket stays up and the heartbeat
+  // resumes on return.
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
       setAppActive(state === "active");
@@ -452,6 +529,31 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
+  // R6: evaluate liveness immediately on foreground/background (and
+  // permission/device) changes so backgrounding speaks "camera band hai"
+  // without waiting for the tick. Entering the foreground arms a fresh
+  // grace window: stale timestamps must not instant-stall.
+  useEffect(() => {
+    if (appActive && cameraVisible) {
+      cameraActiveSinceRef.current = Date.now();
+      lastGateFrameAtRef.current = Date.now();
+    } else {
+      cameraActiveSinceRef.current = null;
+    }
+    checkLiveness();
+  }, [appActive, cameraVisible, checkLiveness]);
+
+  useEffect(() => {
+    const timer = setInterval(checkLiveness, LIVENESS_TICK_MS);
+    return () => clearInterval(timer);
+  }, [checkLiveness]);
+
+  // Keep-awake is held for the whole session while the camera runs:
+  // every screen mounts the camera (hidden except enroll/preview), so
+  // this keys on cameraRuns alone and never on the current screen. The
+  // screen cannot lock under a running camera; backgrounding (or lost
+  // permission/device) releases it. The brief error-restart suspension
+  // keeps it held.
   const cameraRuns = appActive && cameraVisible;
   useEffect(() => {
     if (cameraRuns) {
