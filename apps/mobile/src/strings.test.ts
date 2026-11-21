@@ -1,7 +1,7 @@
 // Strings tests: every language carries the same keys, nothing empty.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GREETING, NO_NETWORK, STRINGS } from "./strings.ts";
+import { GREETING, NETWORK_BACK, NO_NETWORK, STRINGS } from "./strings.ts";
 
 test("all languages share identical string keys", () => {
   const keys = Object.keys(STRINGS.pa).sort();
@@ -25,4 +25,6 @@ test("greeting and offline lines exist per script and language", () => {
   assert.ok(GREETING.gurmukhi.includes("ਤਿਆਰ"));
   assert.ok(GREETING.devanagari.includes("तैयार"));
   assert.equal(NO_NETWORK.en, "no network");
+  assert.equal(NETWORK_BACK.pa, "network wapas");
+  assert.equal(NETWORK_BACK.en, "network back");
 });

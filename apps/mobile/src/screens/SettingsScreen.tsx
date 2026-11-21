@@ -262,6 +262,12 @@ export function SettingsScreen(): React.JSX.Element {
         </Section>
         <Section title={s.diagnostics}>
           <Text style={styles.note}>
+            {s.connection}: {app.connected ? s.connected : s.reconnecting}
+          </Text>
+          <Text style={styles.note}>
+            {s.lastRtt}: {app.lastRttMs === null ? "—" : `${app.lastRttMs} ms`}
+          </Text>
+          <Text style={styles.note}>
             {s.ttsWatchdogFires}: {app.ttsDiagnostics.watchdogFires}
           </Text>
           {app.ttsDiagnostics.recent.length === 0 ? (

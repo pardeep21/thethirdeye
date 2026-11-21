@@ -74,6 +74,8 @@ export interface Strings {
   disclaimerSpoken: string;
   diagnostics: string;
   ttsWatchdogFires: string;
+  connection: string;
+  lastRtt: string;
 }
 
 const PA: Strings = {
@@ -148,6 +150,8 @@ const PA: Strings = {
     "TheThirdEye ik aid hai, medical device nahi. Eh galat ho sakda hai. Zaroori rakam duje bande to confirm karao.",
   diagnostics: "Diagnostics",
   ttsWatchdogFires: "TTS watchdog fires",
+  connection: "Connection",
+  lastRtt: "Last RTT",
 };
 
 const HI: Strings = {
@@ -222,6 +226,8 @@ const HI: Strings = {
     "TheThirdEye ek sahayak hai, medical device nahi. Ye galat ho sakta hai. Zaroori rakam doosre vyakti se confirm karo.",
   diagnostics: "Diagnostics",
   ttsWatchdogFires: "TTS watchdog fires",
+  connection: "Connection",
+  lastRtt: "Last RTT",
 };
 
 const EN: Strings = {
@@ -296,6 +302,8 @@ const EN: Strings = {
     "TheThirdEye is an aid, not a medical device. It can be wrong. Confirm important amounts with another person.",
   diagnostics: "Diagnostics",
   ttsWatchdogFires: "TTS watchdog fires",
+  connection: "Connection",
+  lastRtt: "Last RTT",
 };
 
 export const STRINGS: Record<SpeakLang, Strings> = { pa: PA, hi: HI, en: EN };
@@ -307,9 +315,16 @@ export const GREETING: Record<SpokenScript, string> = {
   devanagari: "मैं तैयार हूँ। बात करने के लिए बटन दबाओ।",
 };
 
-/** "network nahi" is already a fixed string in App; kept here for parity. */
+/** Phone-local drop line (the server is unreachable, so this can't come from phrases). */
 export const NO_NETWORK: Record<SpeakLang, string> = {
   pa: "network nahi",
   hi: "network nahi",
   en: "no network",
+};
+
+/** Phone-local recovery line, spoken once after an announced drop. */
+export const NETWORK_BACK: Record<SpeakLang, string> = {
+  pa: "network wapas",
+  hi: "network wapas",
+  en: "network back",
 };

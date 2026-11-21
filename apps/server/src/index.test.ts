@@ -1616,3 +1616,90 @@ test("R2: chat without any image still reaches the agent", async () => {
     await t.done();
   }
 });
+
+test("R5: every ping is answered immediately with a pong echoing t", async () => {
+  const t = await startTestServer();
+  try {
+    const ws = await openClient(t.port);
+    try {
+      ws.send(JSON.stringify({ type: "hello", appVersion: "0.1.0", device: "ping-test" }));
+      ws.send(JSON.stringify({ type: "ping", t: 111 }));
+      ws.send(JSON.stringify({ type: "ping", t: 222 }));
+      const pongs = await collectUntil(
+        ws,
+        (m) => m.type === "pong" && m.t === 222,
+        2000
+      );
+      assert.deepEqual(
+        pongs.filter((m) => m.type === "pong"),
+        [
+          { type: "pong", t: 111 },
+          { type: "pong", t: 222 },
+        ]
+      );
+    } finally {
+      ws.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("R5: reconnect of the same device within 60 s resumes mute + language", async () => {
+  const t = await startTestServer();
+  try {
+    const ws1 = await openClient(t.port);
+    ws1.send(JSON.stringify({ type: "hello", appVersion: "0.1.0", device: "resume-test" }));
+    ws1.send(JSON.stringify({ type: "settings", lang: "en" }));
+    sendUtterance(ws1, "chup");
+    const muted = await collectUntil(ws1, (m) => m.type === "state" && m.muted === true, 2000);
+    assert.ok(muted.length > 0, "expected a muted state before disconnecting");
+    ws1.close();
+    await new Promise((resolve) => ws1.once("close", resolve));
+    // Let the server's close handler park the session before reconnecting.
+    await new Promise((r) => setTimeout(r, 150));
+
+    const ws2 = await openClient(t.port);
+    try {
+      ws2.send(JSON.stringify({ type: "hello", appVersion: "0.1.0", device: "resume-test" }));
+      const resumed = await collectUntil(ws2, (m) => m.type === "state", 2000);
+      const state = resumed.find((m) => m.type === "state") as
+        | { muted: boolean; lang: string }
+        | undefined;
+      assert.ok(state, `expected a state push on resume, got: ${JSON.stringify(resumed)}`);
+      assert.equal(state.muted, true);
+      assert.equal(state.lang, "en");
+    } finally {
+      ws2.close();
+    }
+  } finally {
+    await t.done();
+  }
+});
+
+test("R5: hello from an unknown device starts fresh (no state push)", async () => {
+  const t = await startTestServer();
+  try {
+    const ws1 = await openClient(t.port);
+    ws1.send(JSON.stringify({ type: "hello", appVersion: "0.1.0", device: "device-a" }));
+    sendUtterance(ws1, "chup");
+    await collectUntil(ws1, (m) => m.type === "state" && m.muted === true, 2000);
+    ws1.close();
+    await new Promise((resolve) => ws1.once("close", resolve));
+    await new Promise((r) => setTimeout(r, 150));
+
+    const ws2 = await openClient(t.port);
+    try {
+      ws2.send(JSON.stringify({ type: "hello", appVersion: "0.1.0", device: "device-b" }));
+      const got = await collectFor(ws2, 300);
+      assert.ok(
+        got.every((m) => m.type !== "state"),
+        `fresh device must get no state push, got: ${JSON.stringify(got)}`
+      );
+    } finally {
+      ws2.close();
+    }
+  } finally {
+    await t.done();
+  }
+});

@@ -10,6 +10,8 @@ import {
   isHelloMessage,
   isListeningMessage,
   isModeMessage,
+  isPingMessage,
+  isPongMessage,
   isSettingsMessage,
   isSpeakMessage,
   isStateMessage,
@@ -144,5 +146,18 @@ test("capture_failed guard", () => {
   assert.equal(isCaptureFailedMessage({ type: "capture_failed", reqId: 7, reason: "x" }), false);
   assert.equal(isCaptureFailedMessage({ type: "frame", reqId: "r1", reason: "x" }), false);
   assert.equal(isCaptureFailedMessage(null), false);
+});
+
+test("ping/pong heartbeat guards", () => {
+  assert.equal(isPingMessage({ type: "ping", t: 123 }), true);
+  assert.equal(isPingMessage({ type: "ping" }), false);
+  assert.equal(isPingMessage({ type: "ping", t: "123" }), false);
+  assert.equal(isPingMessage({ type: "pong", t: 123 }), false);
+  assert.equal(isPingMessage(null), false);
+  assert.equal(isPongMessage({ type: "pong", t: 123 }), true);
+  assert.equal(isPongMessage({ type: "pong" }), false);
+  assert.equal(isPongMessage({ type: "pong", t: "123" }), false);
+  assert.equal(isPongMessage({ type: "ping", t: 123 }), false);
+  assert.equal(isPongMessage(null), false);
 });
 

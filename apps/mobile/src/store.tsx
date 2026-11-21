@@ -60,6 +60,8 @@ export interface AppState {
   cashRead(): void;
   /** TTS watchdog fires + last spoken lines (Settings diagnostics). */
   ttsDiagnostics: TtsDiagnostics;
+  /** Last heartbeat RTT in ms, null before the first pong (diagnostics). */
+  lastRttMs: number | null;
 }
 
 export const AppStateContext = createContext<AppState | null>(null);

@@ -32,6 +32,10 @@ export interface PushToTalkOpts {
   /** Active recognition locale (from Settings lang + device support). */
   recogLang: UtteranceLang;
   voiceMode: VoiceMode;
+  /** False while the socket is down (talk then stays silent server-side). */
+  isOnline: () => boolean;
+  /** Speaks "network nahi" when talk is pressed while offline. */
+  onOfflinePress: () => void;
 }
 
 export function usePushToTalk(opts: PushToTalkOpts): { pttState: PttState; talk: () => void } {
@@ -195,8 +199,21 @@ export function usePushToTalk(opts: PushToTalkOpts): { pttState: PttState; talk:
 
   const press = useCallback(() => {
     console.log(`[voice] press mode=${optsRef.current.voiceMode} recog=${optsRef.current.recogLang}`);
-    if (optsRef.current.voiceMode === "server_audio") void toggleAudio();
-    else dispatch({ type: "press" });
+    // Starting talk while offline speaks "network nahi" instead of
+    // recording; stopping an in-flight listen/record still goes through.
+    if (optsRef.current.voiceMode === "server_audio") {
+      if (!recordingRef.current && !optsRef.current.isOnline()) {
+        optsRef.current.onOfflinePress();
+        return;
+      }
+      void toggleAudio();
+      return;
+    }
+    if (machineRef.current.phase === "idle" && !optsRef.current.isOnline()) {
+      optsRef.current.onOfflinePress();
+      return;
+    }
+    dispatch({ type: "press" });
   }, [dispatch, toggleAudio]);
 
   const pressRef = useRef(press);

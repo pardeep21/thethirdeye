@@ -14,6 +14,7 @@ import {
   isHelloMessage,
   isListeningMessage,
   isModeMessage,
+  isPingMessage,
   isSettingsMessage,
   isUtteranceMessage,
   type DownMessage,
@@ -47,6 +48,7 @@ import {
   sceneFromPerception,
   type SessionFrame,
 } from "./session.js";
+import { SessionStore } from "./sessionStore.js";
 import { UtteranceStats } from "./stats.js";
 import {
   agentTimeoutFromEnv,
@@ -176,6 +178,9 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
   const answer = opts?.answer ?? adapters.answer;
   const frames = new LatestFrameStore();
   const captureTimeoutMs = captureTimeoutFromEnv();
+  // Parked sessions by hello device string: a reconnect within 60 s
+  // resumes conversation context instead of starting blank (R5).
+  const sessions = new SessionStore();
   let speakSeq = 0;
   let utterSeq = 0;
 
@@ -261,8 +266,11 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
 
   const wss = new WebSocketServer({ server: http });
   wss.on("connection", (ws: WebSocket) => {
-    // One session + engine + narrator per WS client; all die with the connection.
-    const session = new Session();
+    // One session + engine + narrator per WS client. The session is parked
+    // by device on close, so a quick reconnect resumes it (R5); the engine,
+    // narrator and tracker are always fresh per connection.
+    let session = new Session();
+    let deviceKey: string | null = null;
     const engine = new DecisionEngine((e) =>
       renderProactive(e, session.lang, session.lastFrame?.hfovDeg)
     );
@@ -1015,11 +1023,28 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
           }
           authed = true;
         }
+        deviceKey = msg.device;
+        const prev = sessions.resume(msg.device, Date.now());
+        if (prev) {
+          session = prev;
+          // The old connection may have died mid-turn; never resume busy.
+          session.agentBusy = false;
+          // The engine/narrator are fresh per connection: sync them to the
+          // resumed session so mute and look-around stay in effect.
+          engine.setMuted(session.muted);
+          narrator.setActive(session.lookAround);
+          console.log(`session resumed device=${msg.device} session=${session.id}`);
+          pushState();
+        }
         return [];
       }
       if (!authed) {
         console.log("rejecting message before hello auth");
         ws.close(WS_CLOSE_AUTH, "missing or invalid app token");
+        return [];
+      }
+      if (isPingMessage(msg)) {
+        send({ type: "pong", t: msg.t });
         return [];
       }
       if (isFrameMessage(msg)) {
@@ -1108,6 +1133,9 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
       console.log(
         `client disconnected (session ${session.id} code=${code}): ${frameCount} frames, ${utterCount} utterances`
       );
+      // Park by device so a quick reconnect resumes context (R5). Never
+      // authed / never said hello => nothing worth keeping.
+      if (deviceKey !== null) sessions.keep(deviceKey, session, Date.now());
     });
   });
 

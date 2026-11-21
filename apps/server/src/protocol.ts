@@ -122,6 +122,19 @@ export interface CaptureNowMessage {
   lens?: LensId;
 }
 
+/** Phone -> server: heartbeat. The server answers every ping with a pong. */
+export interface PingMessage {
+  type: "ping";
+  /** Phone's Date.now() when the ping went up; echoed back for RTT. */
+  t: number;
+}
+
+/** Server -> phone: heartbeat reply; t echoes the ping's t. */
+export interface PongMessage {
+  type: "pong";
+  t: number;
+}
+
 /** Phone -> server: the capture_now photo failed (takePhoto null/throws, retried once). */
 export interface CaptureFailedMessage {
   type: "capture_failed";
@@ -149,8 +162,14 @@ export type UpMessage =
   | UtteranceMessage
   | ListeningMessage
   | ModeMessage
-  | CaptureFailedMessage;
-export type DownMessage = SpeakMessage | EarconMessage | CaptureNowMessage | StateMessage;
+  | CaptureFailedMessage
+  | PingMessage;
+export type DownMessage =
+  | SpeakMessage
+  | EarconMessage
+  | CaptureNowMessage
+  | StateMessage
+  | PongMessage;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
@@ -270,6 +289,16 @@ export function isStateMessage(v: unknown): v is StateMessage {
     typeof v.lang === "string" &&
     typeof v.peopleRev === "number"
   );
+}
+
+export function isPingMessage(v: unknown): v is PingMessage {
+  if (!isRecord(v) || v.type !== "ping") return false;
+  return typeof v.t === "number";
+}
+
+export function isPongMessage(v: unknown): v is PongMessage {
+  if (!isRecord(v) || v.type !== "pong") return false;
+  return typeof v.t === "number";
 }
 
 // --- Perception results (MVP.md section 2, adapter layer) ---

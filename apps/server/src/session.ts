@@ -1,7 +1,8 @@
 // Per-connection conversational session (prompt 02): answer language,
 // spoken-output script, short history, look-around flag, last frame and
-// the compact scene state the agent sees. In memory only; a disconnect
-// drops it (a new WS connection starts a fresh session).
+// the compact scene state the agent sees. In memory only; on disconnect
+// it is parked by device for 60 s so a quick reconnect resumes it
+// (see sessionStore.ts), otherwise a new connection starts fresh.
 import type { SceneTriage, SpeakLang, SpokenScript, TriagePerson, TriageResult } from "./protocol.js";
 import { toClock } from "./clock.js";
 import type { FaceTrack } from "./faces/tracker.js";

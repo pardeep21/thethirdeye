@@ -42,7 +42,7 @@ import { ExpoRecognizer } from "./voice/recognizer";
 import { resolveRecognitionLocale, type RecogLocale } from "./voice/locale";
 import { playEarcon } from "./voice/earcons";
 import { addCaption, useCaptions, usePartial } from "./voice/captions";
-import { GREETING, NO_NETWORK, STRINGS } from "./strings";
+import { GREETING, NETWORK_BACK, NO_NETWORK, STRINGS } from "./strings";
 import { colors } from "./theme";
 
 /** Min ms between gate evaluations: the frame path runs faster than 2 fps. */
@@ -63,7 +63,8 @@ export default function App() {
   const gateRef = useRef(createGate());
   const lastTickRef = useRef(0);
   const captureLockRef = useRef(new CaptureLock());
-  const saidNoNetworkRef = useRef(false);
+  // True between an announced drop ("network nahi" spoken) and its recovery.
+  const announcedLostRef = useRef(false);
   const greetedRef = useRef(false);
   const utteranceTsRef = useRef<number | null>(null);
   const peopleRevRef = useRef<number | null>(null);
@@ -71,6 +72,8 @@ export default function App() {
   const langRef = useRef<SpeakLang>("pa");
   const scriptRef = useRef<SpokenScript>("gurmukhi");
   const [connected, setConnected] = useState(false);
+  const connectedRef = useRef(false);
+  const [lastRttMs, setLastRttMs] = useState<number | null>(null);
   const [screen, setScreen] = useState<Screen>("home");
   const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
   const [appToken, setAppToken] = useState(DEFAULT_APP_TOKEN);
@@ -232,14 +235,28 @@ export default function App() {
           if (wsRef.current !== ws) return;
           setAuthFailed(true);
         },
+        onAnnounce: (kind) => {
+          if (wsRef.current !== ws) return;
+          if (kind === "lost") {
+            announcedLostRef.current = true;
+            queue.enqueue({ type: "speak", text: NO_NETWORK[langRef.current], lang: langRef.current, priority: "P1" });
+          } else {
+            announcedLostRef.current = false;
+            queue.enqueue({ type: "speak", text: NETWORK_BACK[langRef.current], lang: langRef.current, priority: "P1" });
+          }
+        },
+        onRtt: (rttMs) => {
+          if (wsRef.current !== ws) return;
+          setLastRttMs(rttMs);
+        },
         onStatus: (ok) => {
           // Ignore events from a previous URL's socket: its async close
-          // would otherwise speak "network nahi" right after a reconnect.
+          // would otherwise flip state right after a reconnect.
           if (wsRef.current !== ws) return;
+          connectedRef.current = ok;
           setConnected(ok);
           if (ok) {
             setAuthFailed(false);
-            saidNoNetworkRef.current = false;
             ws.sendSettings(langRef.current, scriptRef.current);
             if (lookRef.current) ws.sendMode(true);
             void refreshPeople();
@@ -248,12 +265,11 @@ export default function App() {
               const greeting = GREETING[scriptRef.current];
               queue.enqueue({ type: "speak", text: greeting, lang: langRef.current, priority: "P1", kind: "system" });
               addCaption(greeting, "system");
-            } else {
+            } else if (!announcedLostRef.current) {
+              // After an announced drop the "network wapas" line speaks
+              // instead (onStatus fires before the back announcement).
               playEarcon("ack");
             }
-          } else if (!saidNoNetworkRef.current) {
-            saidNoNetworkRef.current = true;
-            queue.enqueue({ type: "speak", text: NO_NETWORK[langRef.current], lang: langRef.current, priority: "P1" });
           }
         },
       },
@@ -264,6 +280,9 @@ export default function App() {
       }
     );
     wsRef.current = ws;
+    // A new socket (URL/token change) starts un-announced: its own
+    // reconnects play the ack earcon instead of a stale "wapas".
+    announcedLostRef.current = false;
     ws.connect();
     return () => {
       ws.close();
@@ -280,6 +299,10 @@ export default function App() {
     recognizer,
     recogLang: recogLocale,
     voiceMode,
+    isOnline: useCallback(() => connectedRef.current, []),
+    onOfflinePress: useCallback(() => {
+      queue.enqueue({ type: "speak", text: NO_NETWORK[langRef.current], lang: langRef.current, priority: "P1" });
+    }, [queue]),
   });
 
   const takePhoto = useCallback(async (): Promise<PhotoFile | null> => {
@@ -527,6 +550,7 @@ export default function App() {
         toggleLookAround,
         cashRead,
         ttsDiagnostics,
+        lastRttMs,
       }}
     >
       <View style={styles.root}>
