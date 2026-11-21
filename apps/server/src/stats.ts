@@ -1,9 +1,19 @@
 // Per-utterance latency instrumentation (prompt 02): one sample per
 // agent turn, p50/p95 per stage over the last 50 (GET /stats).
-// Overnight T1 adds a timeout count per model-call stage.
+// Overnight T1 adds a timeout count per model-call stage; R4 adds a
+// per-provider ok/timeout/error count per fallback attempt.
 import type { TimeoutStage } from "./timeouts.js";
 
 export type TimeoutCounts = Record<TimeoutStage, number>;
+
+/** One fallback-chain attempt outcome per provider (R4 model_attempt log). */
+export interface ProviderAttemptCounts {
+  ok: number;
+  timeout: number;
+  error: number;
+}
+
+export type ProviderStats = Record<string, ProviderAttemptCounts>;
 
 export interface UtteranceTiming {
   /** utterance_rx -> frame_rx: capture_now round trip (or timeout). */
@@ -31,6 +41,8 @@ export interface StatsSnapshot {
   triageMs: StageStats;
   /** User turns that produced nothing and got the TurnGuard fallback. */
   silentTurnsRescued: number;
+  /** Per-provider attempt outcomes (populated when a fallback chain runs). */
+  providers: ProviderStats;
 }
 
 export const STATS_MAX_SAMPLES = 50;
@@ -51,6 +63,7 @@ export class UtteranceStats {
   private triage: number[] = [];
   private timeouts: TimeoutCounts = { triage: 0, scene: 0, agent: 0, answer: 0, find: 0 };
   private rescued = 0;
+  private providers = new Map<string, ProviderAttemptCounts>();
 
   record(t: UtteranceTiming): void {
     this.samples.push(t);
@@ -72,6 +85,18 @@ export class UtteranceStats {
     this.rescued++;
   }
 
+  /** One fallback-chain attempt outcome for a provider (R4). */
+  recordAttempt(provider: string, outcome: "ok" | "timeout" | "error"): void {
+    let counts = this.providers.get(provider);
+    if (!counts) {
+      counts = { ok: 0, timeout: 0, error: 0 };
+      this.providers.set(provider, counts);
+    }
+    if (outcome === "ok") counts.ok++;
+    else if (outcome === "timeout") counts.timeout++;
+    else counts.error++;
+  }
+
   get count(): number {
     return this.samples.length;
   }
@@ -86,6 +111,7 @@ export class UtteranceStats {
       triageSamples: this.triage.length,
       triageMs: stage(this.triage),
       silentTurnsRescued: this.rescued,
+      providers: Object.fromEntries(this.providers),
     };
   }
 }

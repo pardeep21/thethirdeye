@@ -161,7 +161,12 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
   const ownStore = !opts?.store;
   const people = opts?.store ?? new PeopleStore(defaultDbPath());
   const embedder = opts?.embedder ?? (await selectEmbedder());
-  const adapters = createAdapters(provider, { store: people, embedder });
+  const stats = new UtteranceStats();
+  const adapters = createAdapters(provider, {
+    store: people,
+    embedder,
+    onModelAttempt: (prov, outcome) => stats.recordAttempt(prov, outcome),
+  });
   const facesEveryN = facesEveryNFromEnv();
   const uwCrop = uwCashCropFromEnv();
   const triagePx = triageImagePxFromEnv();
@@ -170,7 +175,6 @@ export async function startServer(port: number, opts?: ServerOpts): Promise<Serv
   const finder = opts?.finder ?? adapters.finder;
   const answer = opts?.answer ?? adapters.answer;
   const frames = new LatestFrameStore();
-  const stats = new UtteranceStats();
   const captureTimeoutMs = captureTimeoutFromEnv();
   let speakSeq = 0;
   let utterSeq = 0;

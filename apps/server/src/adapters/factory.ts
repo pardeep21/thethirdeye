@@ -4,6 +4,7 @@
 // Spark-backed for real providers (07) and scriptable-mock for mock.
 import type {
   AdapterSet,
+  NamedTriage,
   ObjectFinder,
   ProviderName,
 } from "./index.js";
@@ -24,7 +25,20 @@ import {
 } from "./mocks.js";
 import { createFaceMatcher } from "../faces/index.js";
 import type { FaceEmbedder } from "../faces/embed.js";
-import type { AgentBrain } from "./agent.js";
+import type { AgentBrain, AgentToolMode } from "./agent.js";
+import type { AttemptOutcome } from "./fallback.js";
+import {
+  agentFallbackFromEnv,
+  FallbackAgentBrain,
+  FallbackTriage,
+  triageFallbackFromEnv,
+} from "./fallback.js";
+import {
+  agentPrimaryTimeoutFromEnv,
+  agentTimeoutFromEnv,
+  triagePrimaryTimeoutFromEnv,
+  triageTimeoutFromEnv,
+} from "../timeouts.js";
 import {
   agentDebugDirFromEnv,
   agentImagePxFromEnv,
@@ -50,6 +64,8 @@ export interface AdapterDeps {
   embedder?: FaceEmbedder;
   /** When set, OpenAI-compat triage writes raw request/response logs here. */
   debugDir?: string;
+  /** Stats sink for fallback-chain attempts (R4 model_attempt outcomes). */
+  onModelAttempt?: (provider: string, outcome: AttemptOutcome) => void;
 }
 
 /**
@@ -63,15 +79,25 @@ export function metaReasoningEffortFromEnv(): string | undefined {
   return process.env.META_REASONING_EFFORT ?? "minimal";
 }
 
-function createAgentBrain(provider: ProviderName, deps?: AdapterDeps): AgentBrain {
-  if (provider === "mock") return new MockAgentBrain();
-  const common = {
+function agentCommonOpts(deps?: AdapterDeps): {
+  maxTokens: number;
+  reasoningEffort: string | undefined;
+  imagePx: number;
+  toolMode: AgentToolMode;
+  debugDir: string | undefined;
+} {
+  return {
     maxTokens: agentMaxTokensFromEnv(),
     reasoningEffort: agentReasoningEffortFromEnv(),
     imagePx: agentImagePxFromEnv(),
     toolMode: agentToolModeFromEnv(),
     debugDir: deps?.debugDir ?? agentDebugDirFromEnv(),
   };
+}
+
+function createAgentBrain(provider: ProviderName, deps?: AdapterDeps): AgentBrain {
+  if (provider === "mock") return new MockAgentBrain();
+  const common = agentCommonOpts(deps);
   switch (provider) {
     case "meta":
       return new OpenAICompatAgentBrain({
@@ -140,6 +166,75 @@ function createFinder(provider: ProviderName, deps?: AdapterDeps): ObjectFinder 
   return new OpenAICompatFinder(finderOpts(provider, deps));
 }
 
+/**
+ * Wrap the primary agent brain in a primary+backup chain when
+ * AGENT_FALLBACK_PROVIDER is set. Mock can never chain (startup error).
+ */
+function withAgentFallback(
+  primary: AgentBrain,
+  provider: ProviderName,
+  deps?: AdapterDeps
+): AgentBrain {
+  const fb = agentFallbackFromEnv();
+  if (!fb) return primary;
+  if (provider === "mock") {
+    throw new Error("AGENT_FALLBACK_* cannot chain the mock provider");
+  }
+  const backup = new OpenAICompatAgentBrain({
+    baseURL: fb.baseURL,
+    model: fb.model,
+    apiKey: fb.apiKey,
+    ...agentCommonOpts(deps),
+  });
+  return new FallbackAgentBrain(
+    [
+      { provider, impl: primary },
+      { provider: fb.provider, impl: backup },
+    ],
+    {
+      primaryMs: agentPrimaryTimeoutFromEnv(),
+      totalMs: agentTimeoutFromEnv(),
+      record: deps?.onModelAttempt,
+    }
+  );
+}
+
+/**
+ * Wrap the primary triage in a primary+backup chain when
+ * TRIAGE_FALLBACK_PROVIDER is set. Mock can never chain (startup error).
+ */
+function withTriageFallback(
+  primary: NamedTriage,
+  provider: ProviderName,
+  deps?: AdapterDeps
+): NamedTriage {
+  const fb = triageFallbackFromEnv();
+  if (!fb) return primary;
+  if (provider === "mock") {
+    throw new Error("TRIAGE_FALLBACK_* cannot chain the mock provider");
+  }
+  const backup = new OpenAICompatTriage({
+    baseURL: fb.baseURL,
+    model: fb.model,
+    apiKey: fb.apiKey,
+    maxTokens: triageMaxTokensFromEnv(),
+    sceneMaxTokens: sceneMaxTokensFromEnv(),
+    reasoningEffort: fb.provider === "meta" ? metaReasoningEffortFromEnv() : undefined,
+    debugDir: deps?.debugDir,
+  });
+  return new FallbackTriage(
+    [
+      { provider, impl: primary },
+      { provider: fb.provider, impl: backup },
+    ],
+    {
+      primaryMs: triagePrimaryTimeoutFromEnv(),
+      totalMs: triageTimeoutFromEnv(),
+      record: deps?.onModelAttempt,
+    }
+  );
+}
+
 export function createAdapters(
   provider: ProviderName = providerFromEnv(),
   deps?: AdapterDeps
@@ -147,7 +242,7 @@ export function createAdapters(
   // Faces are always store-backed (even for mock) so enrollment works in
   // every mode; without an explicit store the data is memory-only.
   const faces = createFaceMatcher(deps?.store ?? new PeopleStore(":memory:"), deps?.embedder);
-  const agent = createAgentBrain(provider, deps);
+  const agent = withAgentFallback(createAgentBrain(provider, deps), provider, deps);
   const mocks = {
     finder: createFinder(provider, deps),
     stt: new MockSpeechToText(),
@@ -156,18 +251,26 @@ export function createAdapters(
   };
   switch (provider) {
     case "mock":
-      return { triage: new MockVisionTriage(), answer: new MockVisionAnswer(), ...mocks };
+      return {
+        triage: withTriageFallback(new MockVisionTriage(), provider, deps),
+        answer: new MockVisionAnswer(),
+        ...mocks,
+      };
     case "meta":
       return {
-        triage: new OpenAICompatTriage({
-          baseURL: process.env.META_BASE_URL ?? "https://api.meta.ai/v1",
-          model: process.env.META_MODEL ?? "muse-spark-1.3",
-          apiKey: needEnv("META_API_KEY"),
-          maxTokens: triageMaxTokensFromEnv(),
-          sceneMaxTokens: sceneMaxTokensFromEnv(),
-          reasoningEffort: metaReasoningEffortFromEnv(),
-          debugDir: deps?.debugDir,
-        }),
+        triage: withTriageFallback(
+          new OpenAICompatTriage({
+            baseURL: process.env.META_BASE_URL ?? "https://api.meta.ai/v1",
+            model: process.env.META_MODEL ?? "muse-spark-1.3",
+            apiKey: needEnv("META_API_KEY"),
+            maxTokens: triageMaxTokensFromEnv(),
+            sceneMaxTokens: sceneMaxTokensFromEnv(),
+            reasoningEffort: metaReasoningEffortFromEnv(),
+            debugDir: deps?.debugDir,
+          }),
+          provider,
+          deps
+        ),
         answer: new OpenAICompatAnswer({
           baseURL: process.env.META_BASE_URL ?? "https://api.meta.ai/v1",
           model: process.env.META_MODEL ?? "muse-spark-1.3",
@@ -177,14 +280,18 @@ export function createAdapters(
       };
     case "openrouter":
       return {
-        triage: new OpenAICompatTriage({
-          baseURL: "https://openrouter.ai/api/v1",
-          model: process.env.OPENROUTER_MODEL ?? "meta/muse-spark-1.3",
-          apiKey: needEnv("OPENROUTER_API_KEY"),
-          maxTokens: triageMaxTokensFromEnv(),
-          sceneMaxTokens: sceneMaxTokensFromEnv(),
-          debugDir: deps?.debugDir,
-        }),
+        triage: withTriageFallback(
+          new OpenAICompatTriage({
+            baseURL: "https://openrouter.ai/api/v1",
+            model: process.env.OPENROUTER_MODEL ?? "meta/muse-spark-1.3",
+            apiKey: needEnv("OPENROUTER_API_KEY"),
+            maxTokens: triageMaxTokensFromEnv(),
+            sceneMaxTokens: sceneMaxTokensFromEnv(),
+            debugDir: deps?.debugDir,
+          }),
+          provider,
+          deps
+        ),
         answer: new OpenAICompatAnswer({
           baseURL: "https://openrouter.ai/api/v1",
           model: process.env.OPENROUTER_MODEL ?? "meta/muse-spark-1.3",
@@ -199,14 +306,18 @@ export function createAdapters(
       const model = process.env.OPENAI_MODEL ?? (provider === "local" ? "muse-glimmer" : "gpt-4o-mini");
       const apiKey = process.env.OPENAI_API_KEY ?? (provider === "local" ? "ollama" : needEnv("OPENAI_API_KEY"));
       return {
-        triage: new OpenAICompatTriage({
-          baseURL,
-          model,
-          apiKey,
-          maxTokens: triageMaxTokensFromEnv(),
-          sceneMaxTokens: sceneMaxTokensFromEnv(),
-          debugDir: deps?.debugDir,
-        }),
+        triage: withTriageFallback(
+          new OpenAICompatTriage({
+            baseURL,
+            model,
+            apiKey,
+            maxTokens: triageMaxTokensFromEnv(),
+            sceneMaxTokens: sceneMaxTokensFromEnv(),
+            debugDir: deps?.debugDir,
+          }),
+          provider,
+          deps
+        ),
         answer: new OpenAICompatAnswer({ baseURL, model, apiKey }),
         ...mocks,
       };

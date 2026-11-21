@@ -1,8 +1,13 @@
-// Hard timeouts for model calls (overnight T1). Every Spark call races a
-// timer: proactive triage drops silently on timeout, command turns speak a
-// deterministic "not sure" line. Late losers are discarded, never spoken.
-// There is intentionally NO fallback to another provider: mock speaks fixed
-// denominations, which would be a confident wrong answer.
+// Hard timeouts for model calls (overnight T1, R4 fallback). Every model
+// call races a timer: proactive triage drops silently on timeout, command
+// turns speak a deterministic "not sure" line. Late losers are discarded,
+// never spoken.
+// Fallback policy (R4): the MOCK provider never chains (it speaks fixed
+// denominations, a confident wrong answer). REAL providers may chain once:
+// primary gets a per-attempt budget (AGENT_PRIMARY_TIMEOUT_MS and friends),
+// the backup gets the remaining time up to the stage total (AGENT_TIMEOUT_MS
+// etc.), so every turn stays bounded. Only retryable failures move down the
+// chain: timeouts, network errors, 5xx, 429, and parse/validation errors.
 export type TimeoutStage = "triage" | "scene" | "agent" | "answer" | "find";
 
 export class ModelTimeoutError extends Error {
@@ -34,7 +39,22 @@ export function triageTimeoutFromEnv(): number {
 
 /** Agent-turn budget (agent respond + describe/read on the command path). */
 export function agentTimeoutFromEnv(): number {
-  return timeoutMsFromEnv("AGENT_TIMEOUT_MS", 7000);
+  return timeoutMsFromEnv("AGENT_TIMEOUT_MS", 9000);
+}
+
+/** Primary attempt budget inside an agent fallback chain (backup gets the rest). */
+export function agentPrimaryTimeoutFromEnv(): number {
+  return timeoutMsFromEnv("AGENT_PRIMARY_TIMEOUT_MS", 5000);
+}
+
+/** Primary attempt budget inside a triage fallback chain (backup gets the rest). */
+export function triagePrimaryTimeoutFromEnv(): number {
+  return timeoutMsFromEnv("TRIAGE_PRIMARY_TIMEOUT_MS", 5000);
+}
+
+/** Primary attempt budget inside a finder fallback chain (backup gets the rest). */
+export function findPrimaryTimeoutFromEnv(): number {
+  return timeoutMsFromEnv("FIND_PRIMARY_TIMEOUT_MS", 5000);
 }
 
 /** Finder budget (agent locate + command find). */

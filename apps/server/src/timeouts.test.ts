@@ -3,8 +3,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  agentPrimaryTimeoutFromEnv,
   agentTimeoutFromEnv,
+  findPrimaryTimeoutFromEnv,
   findTimeoutFromEnv,
+  triagePrimaryTimeoutFromEnv,
   triageTimeoutFromEnv,
   withTimeout,
   ModelTimeoutError,
@@ -55,7 +58,7 @@ test("a late rejection after timeout never surfaces", async () => {
 test("timeout env parsing: defaults, overrides, invalid", () => {
   for (const k of ["TRIAGE_TIMEOUT_MS", "AGENT_TIMEOUT_MS", "FIND_TIMEOUT_MS"]) delete process.env[k];
   assert.equal(triageTimeoutFromEnv(), 5000);
-  assert.equal(agentTimeoutFromEnv(), 7000);
+  assert.equal(agentTimeoutFromEnv(), 9000);
   assert.equal(findTimeoutFromEnv(), 7000);
   process.env.TRIAGE_TIMEOUT_MS = "100";
   process.env.AGENT_TIMEOUT_MS = "200";
@@ -70,5 +73,25 @@ test("timeout env parsing: defaults, overrides, invalid", () => {
     assert.throws(() => agentTimeoutFromEnv(), /must be a non-negative integer/);
   } finally {
     for (const k of ["TRIAGE_TIMEOUT_MS", "AGENT_TIMEOUT_MS", "FIND_TIMEOUT_MS"]) delete process.env[k];
+  }
+});
+
+test("primary attempt budgets default to 5000 and validate like totals", () => {
+  const keys = ["AGENT_PRIMARY_TIMEOUT_MS", "TRIAGE_PRIMARY_TIMEOUT_MS", "FIND_PRIMARY_TIMEOUT_MS"];
+  for (const k of keys) delete process.env[k];
+  assert.equal(agentPrimaryTimeoutFromEnv(), 5000);
+  assert.equal(triagePrimaryTimeoutFromEnv(), 5000);
+  assert.equal(findPrimaryTimeoutFromEnv(), 5000);
+  process.env.AGENT_PRIMARY_TIMEOUT_MS = "150";
+  process.env.TRIAGE_PRIMARY_TIMEOUT_MS = "250";
+  process.env.FIND_PRIMARY_TIMEOUT_MS = "350";
+  try {
+    assert.equal(agentPrimaryTimeoutFromEnv(), 150);
+    assert.equal(triagePrimaryTimeoutFromEnv(), 250);
+    assert.equal(findPrimaryTimeoutFromEnv(), 350);
+    process.env.AGENT_PRIMARY_TIMEOUT_MS = "nope";
+    assert.throws(() => agentPrimaryTimeoutFromEnv(), /must be a non-negative integer/);
+  } finally {
+    for (const k of keys) delete process.env[k];
   }
 });

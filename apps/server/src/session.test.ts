@@ -135,6 +135,7 @@ test("stats snapshot percentiles over samples", () => {
     triageSamples: 0,
     triageMs: { p50: 0, p95: 0 },
     silentTurnsRescued: 0,
+    providers: {},
   });
   for (let i = 1; i <= 10; i++) {
     st.record({ frameWaitMs: i * 10, modelMs: i * 100, totalMs: i * 1000 });
@@ -173,4 +174,17 @@ test("stats count silent-turn rescues", () => {
   st.recordSilentRescue();
   st.recordSilentRescue();
   assert.equal(st.snapshot().silentTurnsRescued, 2);
+});
+
+test("stats count fallback attempts per provider", () => {
+  const st = new UtteranceStats();
+  assert.deepEqual(st.snapshot().providers, {});
+  st.recordAttempt("meta", "ok");
+  st.recordAttempt("meta", "timeout");
+  st.recordAttempt("openrouter", "error");
+  st.recordAttempt("openrouter", "ok");
+  assert.deepEqual(st.snapshot().providers, {
+    meta: { ok: 1, timeout: 1, error: 0 },
+    openrouter: { ok: 1, timeout: 0, error: 1 },
+  });
 });
