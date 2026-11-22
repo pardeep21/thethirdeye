@@ -64,12 +64,19 @@ export interface AdapterSet {
   agent: AgentBrain;
 }
 
-export type ProviderName = "mock" | "meta" | "openrouter" | "openai" | "local";
+export type ProviderName = "mock" | "chaos" | "meta" | "openrouter" | "openai" | "local";
 
 export function providerFromEnv(): ProviderName {
   const raw = (process.env.PROVIDER ?? "mock").toLowerCase();
-  if (raw === "mock" || raw === "meta" || raw === "openrouter" || raw === "openai" || raw === "local") {
+  if (
+    raw === "mock" ||
+    raw === "chaos" ||
+    raw === "meta" ||
+    raw === "openrouter" ||
+    raw === "openai" ||
+    raw === "local"
+  ) {
     return raw;
   }
-  throw new Error(`PROVIDER=${raw} unknown (expected mock|meta|openrouter|openai|local)`);
+  throw new Error(`PROVIDER=${raw} unknown (expected mock|chaos|meta|openrouter|openai|local)`);
 }

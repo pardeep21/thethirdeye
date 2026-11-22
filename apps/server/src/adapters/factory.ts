@@ -23,6 +23,7 @@ import {
   MockVisionAnswer,
   MockVisionTriage,
 } from "./mocks.js";
+import { chaosConfigFromEnv, wrapAdaptersWithChaos } from "./chaos.js";
 import { createFaceMatcher } from "../faces/index.js";
 import type { FaceEmbedder } from "../faces/embed.js";
 import type { AgentBrain, AgentToolMode } from "./agent.js";
@@ -96,7 +97,7 @@ function agentCommonOpts(deps?: AdapterDeps): {
 }
 
 function createAgentBrain(provider: ProviderName, deps?: AdapterDeps): AgentBrain {
-  if (provider === "mock") return new MockAgentBrain();
+  if (provider === "mock" || provider === "chaos") return new MockAgentBrain();
   const common = agentCommonOpts(deps);
   switch (provider) {
     case "meta":
@@ -157,12 +158,13 @@ function finderOpts(
       return { baseURL, model, apiKey, ...common };
     }
     case "mock":
-      throw new Error("mock uses MockObjectFinder, never finderOpts");
+    case "chaos":
+      throw new Error("mock and chaos use MockObjectFinder, never finderOpts");
   }
 }
 
 function createFinder(provider: ProviderName, deps?: AdapterDeps): ObjectFinder {
-  if (provider === "mock") return new MockObjectFinder();
+  if (provider === "mock" || provider === "chaos") return new MockObjectFinder();
   return new OpenAICompatFinder(finderOpts(provider, deps));
 }
 
@@ -177,8 +179,8 @@ function withAgentFallback(
 ): AgentBrain {
   const fb = agentFallbackFromEnv();
   if (!fb) return primary;
-  if (provider === "mock") {
-    throw new Error("AGENT_FALLBACK_* cannot chain the mock provider");
+  if (provider === "mock" || provider === "chaos") {
+    throw new Error(`AGENT_FALLBACK_* cannot chain the ${provider} provider`);
   }
   const backup = new OpenAICompatAgentBrain({
     baseURL: fb.baseURL,
@@ -210,8 +212,8 @@ function withTriageFallback(
 ): NamedTriage {
   const fb = triageFallbackFromEnv();
   if (!fb) return primary;
-  if (provider === "mock") {
-    throw new Error("TRIAGE_FALLBACK_* cannot chain the mock provider");
+  if (provider === "mock" || provider === "chaos") {
+    throw new Error(`TRIAGE_FALLBACK_* cannot chain the ${provider} provider`);
   }
   const backup = new OpenAICompatTriage({
     baseURL: fb.baseURL,
@@ -256,6 +258,17 @@ export function createAdapters(
         answer: new MockVisionAnswer(),
         ...mocks,
       };
+    case "chaos":
+      // Mock values under seeded faults (R8 soak). STT and faces stay
+      // deterministic; the fallback guards above already reject chaining.
+      return wrapAdaptersWithChaos(
+        {
+          triage: withTriageFallback(new MockVisionTriage(), provider, deps),
+          answer: new MockVisionAnswer(),
+          ...mocks,
+        },
+        chaosConfigFromEnv()
+      );
     case "meta":
       return {
         triage: withTriageFallback(

@@ -14,10 +14,10 @@ import type {
   LocatedObject,
   NamedTriage,
   ObjectFinder,
-  ProviderName,
   VisionAnswer,
 } from "./index.js";
 import { MockObjectFinder, MockVisionAnswer, MockVisionTriage } from "./mocks.js";
+import { ChaosAgentBrain, ChaosAnswer, ChaosFinder, ChaosTriage } from "./chaos.js";
 
 export type AttemptOutcome = "ok" | "timeout" | "error";
 
@@ -48,14 +48,22 @@ export interface ChainOptions {
   turnId?: string;
 }
 
-/** True for the mock label or any mock adapter instance. Never chainable. */
+/**
+ * True for the mock/chaos labels or any mock/chaos adapter instance. Never
+ * chainable: both speak fixed mock values (chaos adds only faults).
+ */
 export function isMockMember(provider: string, impl: unknown): boolean {
-  if (provider.toLowerCase() === "mock") return true;
+  const label = provider.toLowerCase();
+  if (label === "mock" || label === "chaos") return true;
   return (
     impl instanceof MockAgentBrain ||
     impl instanceof MockVisionTriage ||
     impl instanceof MockVisionAnswer ||
-    impl instanceof MockObjectFinder
+    impl instanceof MockObjectFinder ||
+    impl instanceof ChaosAgentBrain ||
+    impl instanceof ChaosTriage ||
+    impl instanceof ChaosAnswer ||
+    impl instanceof ChaosFinder
   );
 }
 
@@ -283,15 +291,18 @@ export class FallbackFinder implements ObjectFinder {
   }
 }
 
+/** Real providers a fallback chain may use (never mock or chaos). */
+export type ChainableProvider = "meta" | "openrouter" | "openai" | "local";
+
 export interface FallbackProviderConfig {
-  provider: Exclude<ProviderName, "mock">;
+  provider: ChainableProvider;
   model: string;
   baseURL: string;
   apiKey: string;
 }
 
 const FALLBACK_DEFAULTS: Record<
-  Exclude<ProviderName, "mock">,
+  ChainableProvider,
   { model: string; baseURL: string; apiKey: string | undefined }
 > = {
   meta: { model: "muse-spark-1.3", baseURL: "https://api.meta.ai/v1", apiKey: undefined },
@@ -311,14 +322,14 @@ function fallbackFromEnv(prefix: "AGENT_FALLBACK" | "TRIAGE_FALLBACK"): Fallback
   if (provider === "mock") {
     throw new Error(`${prefix}_PROVIDER=mock is not allowed in a fallback chain`);
   }
-  const defaults = FALLBACK_DEFAULTS[provider as Exclude<ProviderName, "mock">];
+  const defaults = FALLBACK_DEFAULTS[provider as ChainableProvider];
   if (!defaults) {
     throw new Error(`${prefix}_PROVIDER=${rawProvider} unknown (expected meta|openrouter|openai|local)`);
   }
   const apiKey = process.env[`${prefix}_API_KEY`] ?? defaults.apiKey;
   if (!apiKey) throw new Error(`${prefix}_API_KEY is required for fallback provider ${provider}`);
   return {
-    provider: provider as Exclude<ProviderName, "mock">,
+    provider: provider as ChainableProvider,
     model: process.env[`${prefix}_MODEL`] ?? defaults.model,
     baseURL: process.env[`${prefix}_BASE_URL`] ?? defaults.baseURL,
     apiKey,
